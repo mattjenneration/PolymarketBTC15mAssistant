@@ -85,7 +85,9 @@ export async function executeTradeIfEnabled({
 
   const balanceUsd = await getUsdcBalanceUsd();
   if (balanceUsd === null || balanceUsd < amountUsd) {
-    return { status: "skipped", reason: "insufficient_usdc", balanceUsd };
+    const wallet = getWallet();
+    const walletAddress = wallet ? await wallet.getAddress() : null;
+    return { status: "skipped", reason: "insufficient_usdc", balanceUsd, walletAddress };
   }
 
   const prices = marketSnapshot.prices || {};

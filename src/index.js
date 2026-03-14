@@ -962,7 +962,11 @@ async function main() {
           lastRealTradeAtMs = nowMs;
           console.log(`Live trade executed: ${tradeSide} $${CONFIG.trading.positionSizeUsd.toFixed(2)} (confidence ${confidence.score.toFixed(0)}) orderId=${result.orderId ?? "-"} `);
         } else {
-          console.log(`Trade skipped: ${result.status} (${result.reason ?? result.errorMessage ?? ""})`);
+          const reasonStr = result.reason ?? result.errorMessage ?? "";
+          const addrStr = result.reason === "insufficient_usdc" && result.walletAddress
+            ? ` from ${result.walletAddress}`
+            : "";
+          console.log(`Trade skipped: ${result.status} (${reasonStr}${addrStr})`);
         }
       }
 
