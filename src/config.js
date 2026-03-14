@@ -4,7 +4,7 @@ export const CONFIG = {
   gammaBaseUrl: "https://gamma-api.polymarket.com",
   clobBaseUrl: "https://clob.polymarket.com",
 
-  pollIntervalMs: 5_000,
+  pollIntervalMs: 2_000,
   candleWindowMinutes: 5,
 
   vwapSlopeLookbackMinutes: 5,
@@ -22,12 +22,13 @@ export const CONFIG = {
     autoSelectLatest: (process.env.POLYMARKET_AUTO_SELECT_LATEST || "true").toLowerCase() === "true",
     liveDataWsUrl: process.env.POLYMARKET_LIVE_WS_URL || "wss://ws-live-data.polymarket.com",
     upOutcomeLabel: process.env.POLYMARKET_UP_LABEL || "Up",
-    downOutcomeLabel: process.env.POLYMARKET_DOWN_LABEL || "Down"
+    downOutcomeLabel: process.env.POLYMARKET_DOWN_LABEL || "Down",
+    funderAddress: (process.env.POLYMARKET_FUNDER_ADDRESS || process.env.POLY_FUNDER_ADDRESS || "").trim()
   },
 
   chainlink: {
     polygonRpcUrls: (process.env.POLYGON_RPC_URLS || "").split(",").map((s) => s.trim()).filter(Boolean),
-    polygonRpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-rpc.com",
+    polygonRpcUrl: process.env.POLYGON_RPC_URL || "https://rpc.ankr.com/polygon",
     polygonWssUrls: (process.env.POLYGON_WSS_URLS || "").split(",").map((s) => s.trim()).filter(Boolean),
     polygonWssUrl: process.env.POLYGON_WSS_URL || "",
     btcUsdAggregator: process.env.CHAINLINK_BTC_USD_AGGREGATOR || "0xc907E116054Ad103354f2D350FD2514433D57F6f"

@@ -92,6 +92,8 @@ You can set them in your shell, or create a `.env` file and load it using your p
 - `POLYMARKET_SLUG` (optional)
   - If set, the assistant will target a specific market slug.
 - `POLYMARKET_LIVE_WS_URL` (default: `wss://ws-live-data.polymarket.com`)
+- `POLYMARKET_FUNDER_ADDRESS` or `POLY_FUNDER_ADDRESS` (required for live trading)
+  - Your Polymarket **smart wallet (proxy) address** where USDC is held. Shown in your profile at [polymarket.com/settings](https://polymarket.com/settings). The bot trades from this account; you do not need USDC on your EOA. Your `PRIVATE_KEY` is the key that controls this proxy (e.g. exported from Polymarket).
 
 ### Chainlink on Polygon (fallback)
 
@@ -176,6 +178,14 @@ Example:
 npm start
 ```
 
+### Tests
+
+```bash
+npm run test:trading
+```
+
+Runs lightweight checks for the relayer/smart-wallet trading flow (e.g. skipped when funder is missing, balance null when funder unset). Uses env with `ENABLE_LIVE_TRADING=true`, a dummy `PRIVATE_KEY`, and no `POLYMARKET_FUNDER_ADDRESS`.
+
 ### Stop
 
 Press `Ctrl + C` in the terminal.
@@ -195,6 +205,12 @@ npm start
   - Ensure at least one working Polygon RPC URL is configured.
 - If the console looks like it “spams” lines:
   - The renderer uses `readline.cursorTo` + `clearScreenDown` for a stable, static screen, but some terminals may still behave differently.
+
+## Live trading (smart wallet)
+
+The bot trades via Polymarket’s CLOB using your **smart wallet (proxy)**. USDC should be in your Polymarket account (the address you see at polymarket.com/settings), not on the EOA derived from `PRIVATE_KEY`. Set `POLYMARKET_FUNDER_ADDRESS` (or `POLY_FUNDER_ADDRESS`) to that proxy address. You do not need POL for gas; the exchange settles from your proxy.
+
+**Migration from EOA-only:** Previously, the bot could use an EOA and expected USDC on that address. It now uses the proxy (signature type GNOSIS_SAFE) by default when `POLYMARKET_FUNDER_ADDRESS` is set. Ensure your private key is the one that controls the proxy (e.g. exported from Polymarket).
 
 ## Safety
 

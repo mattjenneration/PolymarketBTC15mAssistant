@@ -1,54 +1,19 @@
-import { ethers } from "ethers";
-import { ClobClient, Side, OrderType } from "@polymarket/clob-client";
 import { CONFIG } from "../config.js";
 import { appendCsvRow } from "../utils.js";
+import {
+  getUsdcBalance as getRelayerUsdcBalance,
+  getAccountInfo,
+  placeOrder as relayerPlaceOrder
+} from "./polymarketRelayerClient.js";
 
-const ERC20_ABI = [
-  "function balanceOf(address owner) view returns (uint256)",
-  "function decimals() view returns (uint8)"
-];
-
-let sharedClient = null;
-let sharedWallet = null;
-let sharedUsdc = null;
-
-function getProvider() {
-  return new ethers.JsonRpcProvider(CONFIG.chainlink.polygonRpcUrl);
-}
-
-function getWallet() {
-  if (sharedWallet) return sharedWallet;
-  if (!CONFIG.trading.privateKey) return null;
-  sharedWallet = new ethers.Wallet(CONFIG.trading.privateKey, getProvider());
-  return sharedWallet;
-}
-
-function getUsdcContract() {
-  if (sharedUsdc) return sharedUsdc;
-  const wallet = getWallet();
-  if (!wallet) return null;
-  sharedUsdc = new ethers.Contract(CONFIG.trading.usdcAddress, ERC20_ABI, wallet);
-  return sharedUsdc;
-}
-
-function getClobClient() {
-  if (sharedClient) return sharedClient;
-  const wallet = getWallet();
-  if (!wallet) return null;
-  sharedClient = new ClobClient(CONFIG.clobBaseUrl, CONFIG.trading.chainId, wallet, null);
-  return sharedClient;
-}
-
+/**
+ * USDC balance in USD for the Polymarket smart wallet (when POLYMARKET_FUNDER_ADDRESS is set).
+ * Returns null if funder is not set or balance cannot be read.
+ */
 export async function getUsdcBalanceUsd() {
-  const usdc = getUsdcContract();
-  if (!usdc) return null;
-  try {
-    const [rawBal, decimals] = await Promise.all([usdc.balanceOf(await usdc.signer.getAddress()), usdc.decimals()]);
-    const bal = Number(ethers.formatUnits(rawBal, decimals));
-    return Number.isFinite(bal) ? bal : null;
-  } catch {
-    return null;
-  }
+  const funder = CONFIG.polymarket?.funderAddress?.trim();
+  if (!funder) return null;
+  return getRelayerUsdcBalance();
 }
 
 export async function executeTradeIfEnabled({
@@ -66,13 +31,18 @@ export async function executeTradeIfEnabled({
     return { status: "skipped", reason: "missing_private_key" };
   }
 
-  if (!marketSnapshot?.ok) {
-    return { status: "skipped", reason: "bad_market_snapshot" };
+  const funder = CONFIG.polymarket?.funderAddress?.trim();
+  if (!funder) {
+    const accountInfo = await getAccountInfo();
+    return {
+      status: "skipped",
+      reason: "missing_funder_address",
+      walletAddress: accountInfo.walletAddress ?? null
+    };
   }
 
-  const client = getClobClient();
-  if (!client) {
-    return { status: "skipped", reason: "no_clob_client" };
+  if (!marketSnapshot?.ok) {
+    return { status: "skipped", reason: "bad_market_snapshot" };
   }
 
   const upTokenId = marketSnapshot.tokens?.upTokenId ?? null;
@@ -83,61 +53,64 @@ export async function executeTradeIfEnabled({
     return { status: "skipped", reason: "missing_token_id" };
   }
 
-  const balanceUsd = await getUsdcBalanceUsd();
+  const balanceUsd = await getRelayerUsdcBalance();
   if (balanceUsd === null || balanceUsd < amountUsd) {
-    const wallet = getWallet();
-    const walletAddress = wallet ? await wallet.getAddress() : null;
-    return { status: "skipped", reason: "insufficient_usdc", balanceUsd, walletAddress };
+    const accountInfo = await getAccountInfo();
+    return {
+      status: "skipped",
+      reason: "insufficient_usdc",
+      balanceUsd,
+      walletAddress: accountInfo.walletAddress ?? null
+    };
   }
 
   const prices = marketSnapshot.prices || {};
-  const rawPriceCents = side === "UP" ? prices.up : prices.down;
-  if (rawPriceCents === null || rawPriceCents === undefined || !Number.isFinite(Number(rawPriceCents))) {
+  const rawPrice = side === "UP" ? prices.up : prices.down;
+  if (rawPrice === null || rawPrice === undefined || !Number.isFinite(Number(rawPrice))) {
     return { status: "skipped", reason: "missing_market_price" };
   }
 
-  const price = Number(rawPriceCents) / 100;
+  let price = Number(rawPrice);
   if (price <= 0 || !Number.isFinite(price)) {
     return { status: "skipped", reason: "bad_price" };
   }
+
+  // Clamp and quantize price to the exchange tick / bounds.
+  const minPrice = 0.01;
+  const maxPrice = 0.99;
+  const tick = 0.01;
+  if (price < minPrice) price = minPrice;
+  if (price > maxPrice) price = maxPrice;
+  price = Math.round(price / tick) * tick;
+  if (price >= 1) price = maxPrice;
 
   const size = amountUsd / price;
   if (!Number.isFinite(size) || size <= 0) {
     return { status: "skipped", reason: "bad_size" };
   }
 
-  const sideEnum = Side.BUY;
+  const placeResult = await relayerPlaceOrder({
+    tokenId,
+    side,
+    size,
+    price,
+    tickSize: "0.01",
+    negRisk: false
+  });
 
-  let orderResponse = null;
-  let error = null;
-
-  try {
-    orderResponse = await client.createAndPostOrder(
-      {
-        tokenID: tokenId,
-        price,
-        size,
-        side: sideEnum
-      },
-      {
-        tickSize: "0.01",
-        negRisk: false
-      },
-      OrderType.GTC
-    );
-  } catch (err) {
-    error = err;
-  }
+  const orderId = placeResult.orderID ?? placeResult.orderId ?? null;
+  const error = placeResult.error ?? null;
+  const status = error ? "error" : "ok";
 
   const result = {
-    status: orderResponse && !error ? "ok" : "error",
-    orderId: orderResponse?.orderID ?? null,
+    status,
+    orderId,
     side,
     amountUsd,
     price,
     size,
     confidenceScore,
-    errorMessage: error ? String(error?.message ?? error) : null
+    errorMessage: error ?? null
   };
 
   try {
@@ -167,4 +140,3 @@ export async function executeTradeIfEnabled({
 
   return result;
 }
-

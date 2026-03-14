@@ -23,7 +23,8 @@ import { computeEdge, decide } from "./engines/edge.js";
 import { generateConfidenceScore } from "./engines/confidence.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
-import { executeTradeIfEnabled } from "./trading/polymarketTrade.js";
+import { executeTradeIfEnabled, getUsdcBalanceUsd } from "./trading/polymarketTrade.js";
+import { getAccountInfo } from "./trading/polymarketRelayerClient.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -522,6 +523,7 @@ async function main() {
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
   const simulatedTradeLedger = {};
   let lastRealTradeAtMs = 0;
+  let loggedFunderOnce = false;
 
   const header = [
     "timestamp",
@@ -712,6 +714,18 @@ async function main() {
       const marketSlug = poly.ok ? String(poly.market?.slug ?? "") : "";
       const marketStartMs = poly.ok && poly.market?.eventStartTime ? new Date(poly.market.eventStartTime).getTime() : null;
 
+      if (CONFIG.trading.enableLiveTrading && CONFIG.polymarket?.funderAddress?.trim() && !loggedFunderOnce) {
+        try {
+          const accountInfo = await getAccountInfo();
+          if (accountInfo?.walletAddress) {
+            console.log(`Live trading: Polymarket account (funder) ${accountInfo.walletAddress}`);
+            loggedFunderOnce = true;
+          }
+        } catch {
+          // ignore
+        }
+      }
+
       if (marketSlug) {
         const history = confidenceHistoryBySlug[marketSlug] ?? [];
         history.unshift({
@@ -892,10 +906,24 @@ async function main() {
 
       const confidenceLine = kv("Confidence:", `${confidence.score.toFixed(0)} (${confidence.direction})`);
       const successRow = renderPredictionHistoryRow();
-      const budgetLine = kv(
-        "Sim Budget:",
-        `$${formatNumber(simulatedBudget, 2)} (PnL: ${simulatedPnl >= 0 ? "+" : ""}$${formatNumber(simulatedPnl, 2)})`
-      );
+      let budgetLine;
+      if (CONFIG.trading.enableLiveTrading) {
+        let accountBalanceUsd = null;
+        try {
+          accountBalanceUsd = await getUsdcBalanceUsd();
+        } catch {
+          // ignore
+        }
+        budgetLine = kv(
+          "Budget:",
+          accountBalanceUsd !== null ? `$${formatNumber(accountBalanceUsd, 2)}` : `${ANSI.gray}-${ANSI.reset}`
+        );
+      } else {
+        budgetLine = kv(
+          "Budget:",
+          `$${formatNumber(simulatedBudget, 2)} (PnL: ${simulatedPnl >= 0 ? "+" : ""}$${formatNumber(simulatedPnl, 2)})`
+        );
+      }
 
       const lines = [
         titleLine,
@@ -970,19 +998,21 @@ async function main() {
         }
       }
 
-      const simulatedTrade = maybeSimulateBestEffortTrade({
-        marketSlug,
-        timeLeftMin,
-        marketUp,
-        marketDown,
-        ledger: simulatedTradeLedger,
-        confidence,
-        confidenceHistory: confidenceHistoryBySlug[marketSlug] ?? []
-      });
+      if (!CONFIG.trading.enableLiveTrading) {
+        const simulatedTrade = maybeSimulateBestEffortTrade({
+          marketSlug,
+          timeLeftMin,
+          marketUp,
+          marketDown,
+          ledger: simulatedTradeLedger,
+          confidence,
+          confidenceHistory: confidenceHistoryBySlug[marketSlug] ?? []
+        });
 
-      if (simulatedTrade) {
-        const msg = `Simulated trade: ${simulatedTrade.side} $${simulatedTrade.costUsd.toFixed(2)} (${simulatedTrade.quantity.toFixed(4)} @ $${simulatedTrade.priceUsd.toFixed(4)}) on ${simulatedTrade.marketSlug} with ~${fmtTimeLeft(simulatedTrade.timeLeftMin)} left`;
-        console.log(msg);
+        if (simulatedTrade) {
+          const msg = `Simulated trade: ${simulatedTrade.side} $${simulatedTrade.costUsd.toFixed(2)} (${simulatedTrade.quantity.toFixed(4)} @ $${simulatedTrade.priceUsd.toFixed(4)}) on ${simulatedTrade.marketSlug} with ~${fmtTimeLeft(simulatedTrade.timeLeftMin)} left`;
+          console.log(msg);
+        }
       }
 
       prevSpotPrice = spotPrice ?? prevSpotPrice;
