@@ -44,6 +44,7 @@ export const CONFIG = {
     usdcAddress: process.env.USDC_ADDRESS || "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174",
     chainId: 137,
     simBudgetUsd: Number(process.env.BUDGET_USD ?? "0"),
-    simBetAmountUsd: Number(process.env.BET_AMOUNT_USD ?? "0")
+    simBetAmountUsd: Number(process.env.BET_AMOUNT_USD ?? "0"),
+    debugLiveTrading: (process.env.DEBUG_LIVE_TRADING || "false").toLowerCase() === "true"
   }
 };

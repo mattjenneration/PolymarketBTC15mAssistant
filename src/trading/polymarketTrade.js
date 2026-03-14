@@ -114,6 +114,7 @@ export async function executeTradeIfEnabled({
   };
 
   try {
+    // Core trade history (high level).
     appendCsvRow("./logs/trade_history.csv", [
       "timestamp",
       "status",
@@ -134,6 +135,56 @@ export async function executeTradeIfEnabled({
       confidenceScore,
       result.orderId ?? "",
       result.errorMessage ?? ""
+    ]);
+
+    // Extended live-trade debug log with more context.
+    const market = marketSnapshot.market || {};
+    const marketSlug = market.slug ?? "";
+    const debugOrderbookUp = marketSnapshot.orderbook?.up ?? {};
+    const debugOrderbookDown = marketSnapshot.orderbook?.down ?? {};
+
+    appendCsvRow("./logs/live_trades_debug.csv", [
+      "timestamp",
+      "status",
+      "side",
+      "amount_usd",
+      "price",
+      "size",
+      "confidence_score",
+      "order_id",
+      "error",
+      "market_slug",
+      "token_id",
+      "balance_usd_before",
+      "market_price_up",
+      "market_price_down",
+      "up_best_bid",
+      "up_best_ask",
+      "down_best_bid",
+      "down_best_ask",
+      "clob_status_raw",
+      "clob_response_raw"
+    ], [
+      now.toISOString(),
+      result.status,
+      side,
+      amountUsd.toFixed(2),
+      price.toFixed(4),
+      size.toFixed(6),
+      confidenceScore,
+      result.orderId ?? "",
+      result.errorMessage ?? "",
+      marketSlug,
+      tokenId,
+      balanceUsd !== null && Number.isFinite(balanceUsd) ? balanceUsd.toFixed(6) : "",
+      prices.up ?? "",
+      prices.down ?? "",
+      debugOrderbookUp.bestBid ?? "",
+      debugOrderbookUp.bestAsk ?? "",
+      debugOrderbookDown.bestBid ?? "",
+      debugOrderbookDown.bestAsk ?? "",
+      placeResult.status ?? "",
+      JSON.stringify(placeResult)
     ]);
   } catch {
   }

@@ -273,21 +273,43 @@ export async function placeOrder({ tokenId, side, size, price, tickSize = "0.01"
   }
   try {
     const orderSide = Side.BUY;
-    const response = await client.createAndPostOrder(
-      {
-        tokenID: tokenId,
-        price,
+    const orderReq = {
+      tokenID: tokenId,
+      price,
+      size,
+      side: orderSide
+    };
+    const orderOpts = { tickSize, negRisk };
+
+    if (CONFIG.trading.debugLiveTrading) {
+      console.log("[LiveTrade] Posting order to CLOB", {
+        tokenId,
+        side,
         size,
-        side: orderSide
-      },
-      { tickSize, negRisk },
-      OrderType.GTC
-    );
+        price,
+        tickSize,
+        negRisk
+      });
+    }
+
+    const response = await client.createAndPostOrder(orderReq, orderOpts, OrderType.GTC);
+
+    if (CONFIG.trading.debugLiveTrading) {
+      console.log("[LiveTrade] CLOB response", {
+        orderId: response?.orderID ?? response?.orderId ?? null,
+        status: response?.status ?? null,
+        raw: response
+      });
+    }
+
     return {
       orderID: response?.orderID ?? response?.orderId ?? null,
       status: response?.status ?? "ok"
     };
   } catch (err) {
+    if (CONFIG.trading.debugLiveTrading) {
+      console.error("[LiveTrade] CLOB order error", err);
+    }
     return {
       error: err?.message ?? String(err)
     };
