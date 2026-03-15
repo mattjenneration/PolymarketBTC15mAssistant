@@ -3,7 +3,7 @@ import { appendCsvRow } from "../utils.js";
 import {
   getUsdcBalance as getRelayerUsdcBalance,
   getAccountInfo,
-  placeOrder as relayerPlaceOrder
+  placeMarketOrder as relayerPlaceMarketOrder
 } from "./polymarketRelayerClient.js";
 
 /**
@@ -89,11 +89,12 @@ export async function executeTradeIfEnabled({
     return { status: "skipped", reason: "bad_size" };
   }
 
-  const placeResult = await relayerPlaceOrder({
+  // Use market order: spend `amountUsd` with worst-price limit = computed price.
+  const placeResult = await relayerPlaceMarketOrder({
     tokenId,
     side,
-    size,
-    price,
+    amountUsd,
+    worstPrice: price,
     tickSize: "0.01",
     negRisk: false
   });

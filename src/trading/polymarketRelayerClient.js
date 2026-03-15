@@ -392,3 +392,101 @@ export async function placeOrder({ tokenId, side, size, price, tickSize = "0.01"
     };
   }
 }
+
+/**
+ * Place a BUY market order via the CLOB using dollar amount.
+ * For BUY: amount is USDC to spend; price is worst acceptable price (slippage limit).
+ * @param {{
+ *   tokenId: string;
+ *   side: "UP" | "DOWN";
+ *   amountUsd: number;
+ *   worstPrice: number;
+ *   tickSize?: string;
+ *   negRisk?: boolean;
+ * }} params
+ * @returns {Promise<{ orderID?: string; status?: string; error?: string }>}
+ */
+export async function placeMarketOrder({ tokenId, side, amountUsd, worstPrice, tickSize = "0.01", negRisk = false }) {
+  const client = await getClobClient();
+  if (!client) {
+    appendApiLog({
+      ts: new Date().toISOString(),
+      type: "clob_market_order",
+      level: "error",
+      ctx: "no_clob_client",
+      request: { tokenId, side, amountUsd, worstPrice, tickSize, negRisk }
+    });
+    return { error: "no_clob_client" };
+  }
+  try {
+    const orderSide = Side.BUY;
+    const orderReq = {
+      tokenID: tokenId,
+      side: orderSide,
+      amount: amountUsd,
+      price: worstPrice
+    };
+    const orderOpts = { tickSize, negRisk };
+
+    if (CONFIG.trading.debugLiveTrading) {
+      console.log("[LiveTrade] Posting MARKET order to CLOB", {
+        tokenId,
+        side,
+        amountUsd,
+        worstPrice,
+        tickSize,
+        negRisk
+      });
+    }
+
+    const marketOrder = await client.createMarketOrder(orderReq, orderOpts);
+    const response = await client.postOrder(marketOrder, OrderType.FOK);
+
+    const summary = {
+      orderID: response?.orderID ?? response?.orderId ?? null,
+      status: response?.status ?? null
+    };
+
+    if (CONFIG.trading.debugLiveTrading) {
+      console.log("[LiveTrade] MARKET response", {
+        ...summary,
+        raw: response
+      });
+    }
+
+    appendApiLog({
+      ts: new Date().toISOString(),
+      type: "clob_market_order",
+      level: "info",
+      request: { tokenId, side, amountUsd, worstPrice, tickSize, negRisk },
+      response: summary,
+      rawResponse: response
+    });
+
+    return {
+      orderID: summary.orderID,
+      status: summary.status ?? "ok"
+    };
+  } catch (err) {
+    if (CONFIG.trading.debugLiveTrading) {
+      console.error("[LiveTrade] CLOB MARKET order error", err);
+    }
+    appendApiLog({
+      ts: new Date().toISOString(),
+      type: "clob_market_order",
+      level: "error",
+      request: { tokenId, side, amountUsd, worstPrice, tickSize, negRisk },
+      error: {
+        message: err?.message ?? String(err),
+        name: err?.name ?? undefined,
+        code: err?.code ?? undefined,
+        status: err?.status ?? err?.statusCode ?? undefined,
+        responseStatus: err?.response?.status ?? undefined,
+        responseData: err?.response?.data ?? undefined
+      }
+    });
+    return {
+      error: err?.message ?? String(err)
+    };
+  }
+}
