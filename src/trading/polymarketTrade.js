@@ -65,36 +65,43 @@ export async function executeTradeIfEnabled({
   }
 
   const prices = marketSnapshot.prices || {};
+  const orderbook = marketSnapshot.orderbook || {};
+  const book = side === "UP" ? orderbook.up : orderbook.down;
+  const bestAsk = book?.bestAsk != null && Number.isFinite(Number(book.bestAsk)) ? Number(book.bestAsk) : null;
   const rawPrice = side === "UP" ? prices.up : prices.down;
-  if (rawPrice === null || rawPrice === undefined || !Number.isFinite(Number(rawPrice))) {
+  const fallbackPrice = rawPrice != null && Number.isFinite(Number(rawPrice)) ? Number(rawPrice) : null;
+
+  if (bestAsk === null && fallbackPrice === null) {
     return { status: "skipped", reason: "missing_market_price" };
   }
 
-  let price = Number(rawPrice);
-  if (price <= 0 || !Number.isFinite(price)) {
-    return { status: "skipped", reason: "bad_price" };
-  }
-
-  // Clamp and quantize price to the exchange tick / bounds.
+  // For market BUY, use best ask (price to take liquidity) + slippage as worst-price limit.
   const minPrice = 0.01;
   const maxPrice = 0.99;
   const tick = 0.01;
-  if (price < minPrice) price = minPrice;
-  if (price > maxPrice) price = maxPrice;
-  price = Math.round(price / tick) * tick;
-  if (price >= 1) price = maxPrice;
+  const slippagePct = CONFIG.trading.marketOrderSlippagePct ?? 0.03;
+  const basePrice = bestAsk ?? fallbackPrice;
+  if (basePrice <= 0 || !Number.isFinite(basePrice)) {
+    return { status: "skipped", reason: "bad_price" };
+  }
 
+  let worstPrice = basePrice * (1 + slippagePct);
+  if (worstPrice < minPrice) worstPrice = minPrice;
+  if (worstPrice > maxPrice) worstPrice = maxPrice;
+  worstPrice = Math.round(worstPrice / tick) * tick;
+  if (worstPrice >= 1) worstPrice = maxPrice;
+
+  const price = basePrice;
   const size = amountUsd / price;
   if (!Number.isFinite(size) || size <= 0) {
     return { status: "skipped", reason: "bad_size" };
   }
 
-  // Use market order: spend `amountUsd` with worst-price limit = computed price.
   const placeResult = await relayerPlaceMarketOrder({
     tokenId,
     side,
     amountUsd,
-    worstPrice: price,
+    worstPrice,
     tickSize: "0.01",
     negRisk: false
   });
