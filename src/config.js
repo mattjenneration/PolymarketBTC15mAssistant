@@ -51,6 +51,19 @@ export const CONFIG = {
     // Market order type: FAK = fill what's available (partial ok), FOK = fill entire amount or cancel
     marketOrderType: (process.env.MARKET_ORDER_TYPE || "FAK").toUpperCase() === "FOK" ? "FOK" : "FAK",
     // Slippage for market orders: fraction (e.g. 0.03 = 3%) added to best ask for worst-price limit
-    marketOrderSlippagePct: Math.max(0, Math.min(0.5, Number(process.env.MARKET_ORDER_SLIPPAGE_PCT ?? "0.03")))
+    marketOrderSlippagePct: Math.max(0, Math.min(0.5, Number(process.env.MARKET_ORDER_SLIPPAGE_PCT ?? "0.03"))),
+    // Entry timing for live orders: place trade when remaining seconds is <= this value.
+    tradeTimingSeconds: Math.max(0, Number(process.env.TRADE_TIMING_SECONDS ?? "60")),
+    // Checkpoints (seconds remaining) for recording model prediction outcomes.
+    predictionCheckpointsSeconds: (() => {
+      const raw = String(process.env.PREDICTION_TIMINGS_SECONDS ?? "120,90,60");
+      const parsed = raw
+        .split(",")
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0)
+        .map((n) => Math.round(n));
+      const unique = [...new Set(parsed)].sort((a, b) => b - a);
+      return unique.length ? unique : [120, 90, 60];
+    })()
   }
 };

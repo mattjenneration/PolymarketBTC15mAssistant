@@ -423,16 +423,19 @@ function parsePriceToBeat(market) {
 
 const dumpedMarkets = new Set();
 
-const predictionHistory = [];
-let activePrediction = null;
+const predictionCheckpointSeconds = Array.isArray(CONFIG.trading?.predictionCheckpointsSeconds)
+  ? CONFIG.trading.predictionCheckpointsSeconds
+  : [120, 90, 60];
+const predictionHistoryByCheckpoint = Object.fromEntries(predictionCheckpointSeconds.map((sec) => [sec, []]));
+const activePredictionsByCheckpoint = Object.fromEntries(predictionCheckpointSeconds.map((sec) => [sec, null]));
 
-function renderPredictionHistoryRow() {
-  if (!predictionHistory.length) {
-    return kv("Success:", `${ANSI.gray}n/a${ANSI.reset}`);
+function renderPredictionHistoryRow(label, history) {
+  if (!history.length) {
+    return kv(label, `${ANSI.gray}n/a${ANSI.reset}`);
   }
 
   const maxShown = 50;
-  const slice = predictionHistory.slice(0, maxShown);
+  const slice = history.slice(0, maxShown);
   const parts = [];
 
   for (const p of slice) {
@@ -441,7 +444,7 @@ function renderPredictionHistoryRow() {
     parts.push(`${color}${arrow}${ANSI.reset}`);
   }
 
-  return kv("Success:", parts.join(" "));
+  return kv(label, parts.join(" "));
 }
 
 function safeFileSlug(x) {
@@ -855,70 +858,98 @@ async function main() {
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
         priceToBeatState = { slug: marketSlug, value: null, setAtMs: null };
-        if (activePrediction && activePrediction.slug !== marketSlug) {
-          const finalPrice = activePrediction.lastPrice;
-          const ptb = activePrediction.priceToBeat;
-          if (finalPrice !== null && ptb !== null && Number.isFinite(Number(finalPrice)) && Number.isFinite(Number(ptb))) {
-            const f = Number(finalPrice);
-            const b = Number(ptb);
-            const correct = activePrediction.side === "UP" ? f > b : activePrediction.side === "DOWN" ? f < b : null;
-
-            predictionHistory.unshift({
-              slug: activePrediction.slug,
-              side: activePrediction.side,
-              correct
-            });
-            if (predictionHistory.length > 50) predictionHistory.length = 50;
-
-            const simulated = simulatedTradesBySlug[activePrediction.slug];
-            if (simulated) {
-              const win = correct === true;
-              const stake = simulated.costUsd;
-              const price = simulated.priceUsd;
-              const size = simulated.quantity;
-              const pnlUsd = win ? size * (1 - price) : -size * price;
-              simulatedPnl += pnlUsd;
-              simulatedBudget += stake + pnlUsd;
+        const previousPredictions = predictionCheckpointSeconds
+          .map((sec) => activePredictionsByCheckpoint[sec])
+          .filter((p) => p && p.slug && p.slug !== marketSlug);
+        if (previousPredictions.length) {
+          const primaryPrediction = activePredictionsByCheckpoint[60] ?? previousPredictions[0];
+          for (const pred of previousPredictions) {
+            const finalPrice = pred.lastPrice;
+            const ptb = pred.priceToBeat;
+            if (finalPrice !== null && ptb !== null && Number.isFinite(Number(finalPrice)) && Number.isFinite(Number(ptb))) {
+              const f = Number(finalPrice);
+              const b = Number(ptb);
+              const correct = pred.side === "UP" ? f > b : pred.side === "DOWN" ? f < b : null;
+              const history = predictionHistoryByCheckpoint[pred.checkpointSec] ?? [];
+              history.unshift({ slug: pred.slug, side: pred.side, correct });
+              if (history.length > 50) history.length = 50;
+              predictionHistoryByCheckpoint[pred.checkpointSec] = history;
 
               try {
-                appendCsvRow("./logs/simulated_trades.csv", [
+                appendCsvRow("./logs/prediction_timing_outcomes.csv", [
                   "settled_at",
                   "market_slug",
-                  "side",
-                  "entry_time",
-                  "entry_time_left_min",
-                  "entry_price_usd",
-                  "cost_usd",
+                  "checkpoint_sec",
+                  "prediction_side",
                   "price_to_beat",
                   "final_price",
-                  "correct",
-                  "confidence_score",
-                  "confidence_direction",
-                  "pnl_usd",
-                  "budget_after_usd"
+                  "correct"
                 ], [
                   new Date().toISOString(),
-                  activePrediction.slug,
-                  simulated.side ?? activePrediction.side ?? "",
-                  simulated.at,
-                  simulated.timeLeftMin.toFixed(3),
-                  simulated.priceUsd.toFixed(4),
-                  simulated.costUsd.toFixed(4),
+                  pred.slug,
+                  pred.checkpointSec,
+                  pred.side ?? "",
                   b.toFixed(2),
                   f.toFixed(2),
-                  String(correct),
-                  simulated.confidenceScore ?? "",
-                  simulated.confidenceDirection ?? "",
-                  pnlUsd.toFixed(4),
-                  simulatedBudget.toFixed(4)
+                  String(correct)
                 ]);
               } catch {
                 // ignore logging errors
               }
-              delete simulatedTradesBySlug[activePrediction.slug];
+
+              if (primaryPrediction && pred.checkpointSec === primaryPrediction.checkpointSec) {
+                const simulated = simulatedTradesBySlug[pred.slug];
+                if (simulated) {
+                  const win = correct === true;
+                  const stake = simulated.costUsd;
+                  const price = simulated.priceUsd;
+                  const size = simulated.quantity;
+                  const pnlUsd = win ? size * (1 - price) : -size * price;
+                  simulatedPnl += pnlUsd;
+                  simulatedBudget += stake + pnlUsd;
+                  try {
+                    appendCsvRow("./logs/simulated_trades.csv", [
+                      "settled_at",
+                      "market_slug",
+                      "side",
+                      "entry_time",
+                      "entry_time_left_min",
+                      "entry_price_usd",
+                      "cost_usd",
+                      "price_to_beat",
+                      "final_price",
+                      "correct",
+                      "confidence_score",
+                      "confidence_direction",
+                      "pnl_usd",
+                      "budget_after_usd"
+                    ], [
+                      new Date().toISOString(),
+                      pred.slug,
+                      simulated.side ?? pred.side ?? "",
+                      simulated.at,
+                      simulated.timeLeftMin.toFixed(3),
+                      simulated.priceUsd.toFixed(4),
+                      simulated.costUsd.toFixed(4),
+                      b.toFixed(2),
+                      f.toFixed(2),
+                      String(correct),
+                      simulated.confidenceScore ?? "",
+                      simulated.confidenceDirection ?? "",
+                      pnlUsd.toFixed(4),
+                      simulatedBudget.toFixed(4)
+                    ]);
+                  } catch {
+                    // ignore logging errors
+                  }
+                  delete simulatedTradesBySlug[pred.slug];
+                }
+              }
             }
           }
-          activePrediction = null;
+          for (const sec of predictionCheckpointSeconds) {
+            activePredictionsByCheckpoint[sec] = null;
+          }
         }
       }
 
@@ -971,17 +1002,25 @@ async function main() {
       const betType = confidence.score > 0 ? "UP" : confidence.score < 0 ? "DOWN" : "NO TRADE";
 
       if (marketSlug) {
-        if (!activePrediction) {
-          activePrediction = {
-            slug: marketSlug,
-            side: betType === "UP" || betType === "DOWN" ? betType : null,
-            priceToBeat,
-            lastPrice: currentPrice
-          };
-        } else if (activePrediction.slug === marketSlug) {
-          activePrediction.side = betType === "UP" || betType === "DOWN" ? betType : activePrediction.side;
-          activePrediction.priceToBeat = priceToBeat ?? activePrediction.priceToBeat;
-          activePrediction.lastPrice = currentPrice ?? activePrediction.lastPrice;
+        const timeLeftSec = Number.isFinite(Number(timeLeftMin)) ? Number(timeLeftMin) * 60 : null;
+        for (const checkpointSec of predictionCheckpointSeconds) {
+          const existing = activePredictionsByCheckpoint[checkpointSec];
+          if (existing && existing.slug === marketSlug) {
+            existing.priceToBeat = priceToBeat ?? existing.priceToBeat;
+            existing.lastPrice = currentPrice ?? existing.lastPrice;
+          }
+          const shouldCapture = timeLeftSec !== null
+            && timeLeftSec <= checkpointSec
+            && (!existing || existing.slug !== marketSlug);
+          if (shouldCapture) {
+            activePredictionsByCheckpoint[checkpointSec] = {
+              slug: marketSlug,
+              checkpointSec,
+              side: betType === "UP" || betType === "DOWN" ? betType : null,
+              priceToBeat,
+              lastPrice: currentPrice
+            };
+          }
         }
       }
 
@@ -1021,7 +1060,9 @@ async function main() {
         : ANSI.reset;
 
       const confidenceLine = kv("Confidence:", `${confidence.score.toFixed(0)} (${confidence.direction})`);
-      const successRow = renderPredictionHistoryRow();
+      const success120Row = renderPredictionHistoryRow("Success @120s:", predictionHistoryByCheckpoint[120] ?? []);
+      const success90Row = renderPredictionHistoryRow("Success @90s:", predictionHistoryByCheckpoint[90] ?? []);
+      const success60Row = renderPredictionHistoryRow("Success:", predictionHistoryByCheckpoint[60] ?? []);
       let budgetLine;
       if (CONFIG.trading.enableLiveTrading) {
         let accountBalanceUsd = null;
@@ -1051,7 +1092,9 @@ async function main() {
         kv("TA Predict:", predictValue),
         confidenceLine,
         budgetLine,
-        successRow,
+        success120Row,
+        success90Row,
+        success60Row,
         kv("Heiken Ashi:", heikenLine.split(": ")[1] ?? heikenLine),
         kv("RSI:", rsiLine.split(": ")[1] ?? rsiLine),
         kv("MACD:", macdLine.split(": ")[1] ?? macdLine),
@@ -1083,14 +1126,14 @@ async function main() {
       const nowMs = Date.now();
       const minutesSinceLastTrade = lastRealTradeAtMs === 0 ? Infinity : (nowMs - lastRealTradeAtMs) / 60_000;
       const inCooldown = minutesSinceLastTrade < CONFIG.trading.cooldownMinutes;
+      const timeLeftSec = timeLeftMin !== null && Number.isFinite(Number(timeLeftMin)) ? Number(timeLeftMin) * 60 : null;
 
       const absConfidence = Math.abs(confidence.score);
       const shouldAttemptRealTrade = !inCooldown
         && absConfidence >= CONFIG.trading.tradeThreshold
-        && timeLeftMin !== null
-        && Number.isFinite(Number(timeLeftMin))
-        && Number(timeLeftMin) <= 2
-        && Number(timeLeftMin) >= 0
+        && timeLeftSec !== null
+        && timeLeftSec <= CONFIG.trading.tradeTimingSeconds
+        && timeLeftSec >= 0
         && poly.ok;
 
       if (shouldAttemptRealTrade) {
