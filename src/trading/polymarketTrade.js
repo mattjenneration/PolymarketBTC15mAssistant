@@ -16,6 +16,20 @@ export async function getUsdcBalanceUsd() {
   return getRelayerUsdcBalance();
 }
 
+function resolveMaxBidPriceForConfidence(confidenceScore) {
+  const baseMax = Number(CONFIG.trading.maxBidPrice ?? 0.95);
+  const ladder = Array.isArray(CONFIG.trading.confidenceMaxBidLadder) ? CONFIG.trading.confidenceMaxBidLadder : [];
+  const absConfidence = Number.isFinite(Number(confidenceScore)) ? Math.abs(Number(confidenceScore)) : 0;
+  let resolved = baseMax;
+  for (const step of ladder) {
+    if (!step || !Number.isFinite(step.threshold) || !Number.isFinite(step.maxPrice)) continue;
+    if (absConfidence >= step.threshold) {
+      resolved = step.maxPrice;
+    }
+  }
+  return Math.max(0.01, Math.min(0.99, resolved));
+}
+
 export async function executeTradeIfEnabled({
   side,
   amountUsd,
@@ -77,7 +91,7 @@ export async function executeTradeIfEnabled({
 
   // For market BUY, use best ask (price to take liquidity) + slippage as worst-price limit.
   const minPrice = 0.01;
-  const maxPrice = 0.99;
+  const exchangeMaxPrice = 0.99;
   const tick = 0.01;
   const slippagePct = CONFIG.trading.marketOrderSlippagePct ?? 0.03;
   const basePrice = bestAsk ?? fallbackPrice;
@@ -85,18 +99,72 @@ export async function executeTradeIfEnabled({
     return { status: "skipped", reason: "bad_price" };
   }
 
-  // Risk control: never bid if the outcome probability is already very high.
-  // This avoids buying at/near 1.00 where a correct pick only pays back a tiny amount.
-  const neverBidAbove = 0.95;
-  if (basePrice > neverBidAbove) {
-    return { status: "skipped", reason: "market_price_above_95c" };
+  const maxBidPriceForConfidence = resolveMaxBidPriceForConfidence(confidenceScore);
+  if (basePrice > maxBidPriceForConfidence) {
+    try {
+      const market = marketSnapshot.market || {};
+      const marketSlug = market.slug ?? "";
+      const debugOrderbookUp = marketSnapshot.orderbook?.up ?? {};
+      const debugOrderbookDown = marketSnapshot.orderbook?.down ?? {};
+      appendCsvRow("./logs/live_trades_debug.csv", [
+        "timestamp",
+        "status",
+        "side",
+        "amount_usd",
+        "price",
+        "size",
+        "confidence_score",
+        "order_id",
+        "error",
+        "market_slug",
+        "token_id",
+        "balance_usd_before",
+        "market_price_up",
+        "market_price_down",
+        "up_best_bid",
+        "up_best_ask",
+        "down_best_bid",
+        "down_best_ask",
+        "max_bid_price_allowed",
+        "base_price_used",
+        "clob_status_raw",
+        "clob_response_raw"
+      ], [
+        now.toISOString(),
+        "skipped",
+        side,
+        amountUsd.toFixed(2),
+        basePrice.toFixed(4),
+        "",
+        confidenceScore,
+        "",
+        "market_price_above_confidence_max",
+        marketSlug,
+        tokenId,
+        balanceUsd !== null && Number.isFinite(balanceUsd) ? balanceUsd.toFixed(6) : "",
+        prices.up ?? "",
+        prices.down ?? "",
+        debugOrderbookUp.bestBid ?? "",
+        debugOrderbookUp.bestAsk ?? "",
+        debugOrderbookDown.bestBid ?? "",
+        debugOrderbookDown.bestAsk ?? "",
+        maxBidPriceForConfidence.toFixed(4),
+        basePrice.toFixed(4),
+        "",
+        ""
+      ]);
+    } catch {
+      // ignore logging errors
+    }
+    return { status: "skipped", reason: "market_price_above_confidence_max" };
   }
 
   let worstPrice = basePrice * (1 + slippagePct);
   if (worstPrice < minPrice) worstPrice = minPrice;
-  if (worstPrice > maxPrice) worstPrice = maxPrice;
+  if (worstPrice > exchangeMaxPrice) worstPrice = exchangeMaxPrice;
+  if (worstPrice > maxBidPriceForConfidence) worstPrice = maxBidPriceForConfidence;
   worstPrice = Math.round(worstPrice / tick) * tick;
-  if (worstPrice >= 1) worstPrice = maxPrice;
+  if (worstPrice >= 1) worstPrice = exchangeMaxPrice;
 
   const price = basePrice;
   const size = amountUsd / price;
@@ -181,6 +249,8 @@ export async function executeTradeIfEnabled({
       "up_best_ask",
       "down_best_bid",
       "down_best_ask",
+      "max_bid_price_allowed",
+      "base_price_used",
       "clob_status_raw",
       "clob_response_raw"
     ], [
@@ -202,6 +272,8 @@ export async function executeTradeIfEnabled({
       debugOrderbookUp.bestAsk ?? "",
       debugOrderbookDown.bestBid ?? "",
       debugOrderbookDown.bestAsk ?? "",
+      maxBidPriceForConfidence.toFixed(4),
+      basePrice.toFixed(4),
       placeResult.status ?? "",
       JSON.stringify(placeResult)
     ]);

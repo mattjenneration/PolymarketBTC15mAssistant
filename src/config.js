@@ -52,6 +52,32 @@ export const CONFIG = {
     marketOrderType: (process.env.MARKET_ORDER_TYPE || "FAK").toUpperCase() === "FOK" ? "FOK" : "FAK",
     // Slippage for market orders: fraction (e.g. 0.03 = 3%) added to best ask for worst-price limit
     marketOrderSlippagePct: Math.max(0, Math.min(0.5, Number(process.env.MARKET_ORDER_SLIPPAGE_PCT ?? "0.03"))),
+    // Default max price we're willing to pay for a share.
+    maxBidPrice: Math.max(0.01, Math.min(0.99, Number(process.env.MAX_BID_PRICE ?? "0.95"))),
+    // Confidence-to-max-price ladder.
+    // Format example: "0:0.70,20:0.80,40:0.88,60:0.93,80:0.97"
+    // Uses absolute confidence score (0..100), picks highest threshold <= current confidence.
+    confidenceMaxBidLadder: (() => {
+      const raw = String(process.env.CONFIDENCE_MAX_BID_LADDER ?? "");
+      if (!raw.trim()) return [];
+      const pairs = raw
+        .split(",")
+        .map((part) => part.trim())
+        .filter(Boolean)
+        .map((part) => {
+          const [thresholdRaw, priceRaw] = part.split(":").map((s) => s.trim());
+          const threshold = Number(thresholdRaw);
+          const price = Number(priceRaw);
+          if (!Number.isFinite(threshold) || !Number.isFinite(price)) return null;
+          return {
+            threshold: Math.max(0, Math.min(100, Math.round(threshold))),
+            maxPrice: Math.max(0.01, Math.min(0.99, price))
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.threshold - b.threshold);
+      return pairs;
+    })(),
     // Entry timing for live orders: place trade when remaining seconds is <= this value.
     tradeTimingSeconds: Math.max(0, Number(process.env.TRADE_TIMING_SECONDS ?? "60")),
     // Checkpoints (seconds remaining) for recording model prediction outcomes.
