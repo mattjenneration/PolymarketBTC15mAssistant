@@ -1137,8 +1137,8 @@ async function main() {
       const success90Row = renderPredictionHistoryRow("Success @90s:", predictionHistoryByCheckpoint[90] ?? []);
       const success60Row = renderPredictionHistoryRow("Success:", predictionHistoryByCheckpoint[60] ?? []);
       let budgetLine;
+      let accountBalanceUsd = null;
       if (CONFIG.trading.enableLiveTrading) {
-        let accountBalanceUsd = null;
         try {
           accountBalanceUsd = await getUsdcBalanceUsd();
         } catch {
@@ -1196,6 +1196,71 @@ async function main() {
         sepLine(),
         centerText(`${ANSI.dim}${ANSI.gray}Currently thinking ${betType}${ANSI.reset}`, screenWidth())
       ].filter((x) => x !== null);
+
+      try {
+        const dashNow = Date.now();
+        const dashMinsSince = lastRealTradeAtMs === 0 ? Infinity : (dashNow - lastRealTradeAtMs) / 60_000;
+        const dashInCooldown = dashMinsSince < CONFIG.trading.cooldownMinutes;
+        const dashTimeLeftSec =
+          timeLeftMin !== null && Number.isFinite(Number(timeLeftMin)) ? Number(timeLeftMin) * 60 : null;
+        const snapshot = {
+          updatedAt: new Date().toISOString(),
+          market: {
+            question: poly.ok ? String(poly.market?.question ?? "") : "",
+            slug: marketSlug,
+            liquidity,
+            timeLeftMin,
+            settlementLeftMin,
+            up: marketUp,
+            down: marketDown,
+            priceToBeat,
+            chainlinkPrice: currentPrice,
+            binanceSpot: spotPrice
+          },
+          model: {
+            predictUp: timeAware.adjustedUp,
+            predictDown: timeAware.adjustedDown,
+            confidenceScore: confidence.score,
+            confidenceDirection: confidence.direction,
+            signal,
+            gptDirection: gptIndicators.direction,
+            gptScore: gptIndicators.score,
+            gptConfidencePct: gptIndicators.confidence,
+            regime: regimeInfo.regime
+          },
+          trading: {
+            enableLiveTrading: CONFIG.trading.enableLiveTrading,
+            tradeThreshold: CONFIG.trading.tradeThreshold,
+            positionSizeUsd: CONFIG.trading.positionSizeUsd,
+            cooldownMinutes: CONFIG.trading.cooldownMinutes,
+            tradeTimingSeconds: CONFIG.trading.tradeTimingSeconds,
+            maxBidPrice: CONFIG.trading.maxBidPrice,
+            confidenceMaxBidLadder: CONFIG.trading.confidenceMaxBidLadder ?? [],
+            inCooldown: dashInCooldown,
+            cooldownRemainingMin:
+              dashInCooldown && Number.isFinite(dashMinsSince)
+                ? Math.max(0, CONFIG.trading.cooldownMinutes - dashMinsSince)
+                : null,
+            wouldAttemptAutoBid:
+              !dashInCooldown &&
+              Math.abs(confidence.score) >= CONFIG.trading.tradeThreshold &&
+              dashTimeLeftSec !== null &&
+              dashTimeLeftSec <= CONFIG.trading.tradeTimingSeconds &&
+              dashTimeLeftSec >= 0 &&
+              poly.ok,
+            balanceUsd: CONFIG.trading.enableLiveTrading ? accountBalanceUsd : simulatedBudget,
+            simulatedPnlUsd: CONFIG.trading.enableLiveTrading ? null : simulatedPnl
+          },
+          hints: {
+            betType,
+            nextAutoSide: confidence.score > 0 ? "UP" : confidence.score < 0 ? "DOWN" : null
+          }
+        };
+        fs.mkdirSync("./logs", { recursive: true });
+        fs.writeFileSync(path.join("./logs", "dashboard.json"), JSON.stringify(snapshot), "utf8");
+      } catch {
+        // ignore dashboard write errors
+      }
 
       renderScreen(lines.join("\n") + "\n");
 

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BTC 5m Assistant | Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-[#0b0e11] text-slate-200 min-h-screen font-sans antialiased">
+  <div class="max-w-6xl mx-auto px-4 py-6 md:py-10">
+    <header class="flex flex-col lg:flex-row lg:items-end justify-between gap-6 border-b border-slate-800 pb-8">
+      <div>
+        <h1 class="text-2xl md:text-3xl font-black text-white tracking-tight">BTC 5m Up/Down</h1>
+        <p class="text-slate-500 text-sm mt-1">Live bot state (mirrors PM2) · trade history · confidence</p>
+        <div class="flex flex-wrap gap-4 mt-3 font-mono text-[10px] text-slate-500 uppercase">
+          <span>ET <span id="clock-et" class="text-emerald-400 font-bold">--:--:--</span></span>
+          <span>UTC <span id="clock-utc">--:--:--</span></span>
+        </div>
+      </div>
+      <div class="flex flex-col items-start lg:items-end gap-3">
+        <nav class="flex rounded-lg bg-[#161a1e] p-1 border border-slate-800">
+          <button type="button" data-tab="live" class="tab-btn px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-400">Live</button>
+          <button type="button" data-tab="history" class="tab-btn px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-300">History</button>
+        </nav>
+        <div class="text-right w-full lg:w-auto">
+          <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest">Account (Polymarket)</p>
+          <p id="totalVal" class="text-4xl font-black text-white tracking-tighter">—</p>
+          <p id="lastSync" class="text-[10px] text-slate-600 font-mono mt-1"></p>
+        </div>
+      </div>
+    </header>
+
+    <!-- Live -->
+    <section id="panel-live" class="mt-8 space-y-6">
+      <div id="dash-empty" class="hidden rounded-2xl border border-amber-900/40 bg-amber-950/20 px-4 py-3 text-amber-200/90 text-sm">
+        No <code class="text-amber-100">logs/dashboard.json</code> yet. Start the bot with <code class="text-amber-100">npm start</code> (same machine) so the UI can show the 5m market view.
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded-2xl border border-slate-800 bg-[#161a1e] p-5 shadow-xl">
+          <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Market</h2>
+          <p id="m-question" class="text-white font-semibold leading-snug">—</p>
+          <p id="m-slug" class="text-xs font-mono text-slate-500 mt-2">—</p>
+          <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <span class="text-[10px] uppercase text-slate-500">Time left (window)</span>
+              <p id="m-time" class="font-mono text-emerald-400 font-bold">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] uppercase text-slate-500">Settlement</span>
+              <p id="m-settle" class="font-mono text-slate-300">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] uppercase text-emerald-500">↑ UP</span>
+              <p id="m-up" class="font-mono text-lg text-white">—</p>
+            </div>
+            <div>
+              <span class="text-[10px] uppercase text-rose-500">↓ DOWN</span>
+              <p id="m-down" class="font-mono text-lg text-white">—</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-[#161a1e] p-5 shadow-xl">
+          <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Model &amp; signal</h2>
+          <div class="space-y-2 text-sm">
+            <p><span class="text-slate-500">Confidence</span> <span id="d-conf" class="font-mono text-white font-bold">—</span></p>
+            <p><span class="text-slate-500">GPT stack</span> <span id="d-gpt" class="font-mono text-slate-300">—</span></p>
+            <p><span class="text-slate-500">TA predict</span> <span id="d-predict" class="font-mono text-slate-300">—</span></p>
+            <p><span class="text-slate-500">Signal</span> <span id="d-signal" class="font-mono text-emerald-400 font-bold">—</span></p>
+            <p><span class="text-slate-500">Regime</span> <span id="d-regime" class="font-mono text-slate-400">—</span></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid md:grid-cols-2 gap-4">
+        <div class="rounded-2xl border border-slate-800 bg-[#161a1e] p-5">
+          <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Chainlink · Binance</h2>
+          <p class="text-sm"><span class="text-slate-500">Price to beat</span> <span id="d-ptb" class="font-mono text-white">—</span></p>
+          <p class="text-sm mt-1"><span class="text-slate-500">Chainlink BTC</span> <span id="d-cl" class="font-mono text-white">—</span></p>
+          <p class="text-sm mt-1"><span class="text-slate-500">Binance spot</span> <span id="d-bn" class="font-mono text-white">—</span></p>
+        </div>
+
+        <div class="rounded-2xl border border-slate-800 bg-[#161a1e] p-5">
+          <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Auto-bid (.env)</h2>
+          <ul id="d-cfg" class="text-xs font-mono text-slate-400 space-y-1.5"></ul>
+          <p id="d-arm" class="mt-4 text-sm font-bold"></p>
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Recent CLOB fills (api.log)</h2>
+        <div class="rounded-2xl border border-slate-800 overflow-hidden bg-[#161a1e] shadow-xl">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-[#0b0e11] text-slate-500 text-[10px] uppercase font-black tracking-widest border-b border-slate-800">
+              <tr>
+                <th class="p-4">Time (ET)</th>
+                <th class="p-4">Side</th>
+                <th class="p-4 text-right">Price</th>
+                <th class="p-4 text-right">Cost</th>
+                <th class="p-4 text-center">Conf.</th>
+                <th class="p-4 text-center">Outcome</th>
+              </tr>
+            </thead>
+            <tbody id="fillsTable" class="divide-y divide-slate-800/40"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section id="panel-history" class="mt-8 hidden space-y-6">
+      <div class="flex flex-col sm:flex-row flex-wrap gap-3 items-end">
+        <label class="text-[10px] uppercase font-bold text-slate-500">Preset
+          <select id="hist-preset" class="mt-1 block w-full sm:w-44 rounded-lg bg-[#161a1e] border border-slate-700 px-3 py-2 text-sm">
+            <option value="24">Last 24 hours</option>
+            <option value="48">Last 48 hours</option>
+            <option value="168">Last 7 days</option>
+            <option value="custom">Custom range</option>
+          </select>
+        </label>
+        <label id="wrap-from" class="text-[10px] uppercase font-bold text-slate-500 hidden">From
+          <input type="datetime-local" id="hist-from" class="mt-1 block rounded-lg bg-[#161a1e] border border-slate-700 px-3 py-2 text-sm font-mono" />
+        </label>
+        <label id="wrap-to" class="text-[10px] uppercase font-bold text-slate-500 hidden">To
+          <input type="datetime-local" id="hist-to" class="mt-1 block rounded-lg bg-[#161a1e] border border-slate-700 px-3 py-2 text-sm font-mono" />
+        </label>
+        <button type="button" id="hist-apply" class="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2 text-xs font-bold uppercase">Apply</button>
+      </div>
+
+      <div>
+        <h2 class="text-lg font-bold text-white mb-3">Live trades (logged)</h2>
+        <p class="text-xs text-slate-500 mb-2">Mapped to confidence from <code class="text-slate-400">trade_history.csv</code>; outcomes from Gamma once markets resolve.</p>
+        <div class="rounded-2xl border border-slate-800 overflow-hidden bg-[#161a1e]">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-[#0b0e11] text-slate-500 text-[10px] uppercase font-black tracking-widest border-b border-slate-800">
+              <tr>
+                <th class="p-3">Time</th>
+                <th class="p-3">Side</th>
+                <th class="p-3 text-right">Conf.</th>
+                <th class="p-3 text-right">$</th>
+                <th class="p-3">Status</th>
+                <th class="p-3 text-center">Outcome</th>
+              </tr>
+            </thead>
+            <tbody id="hist-live" class="divide-y divide-slate-800/40"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <h2 class="text-lg font-bold text-white mb-3">Simulated (paper)</h2>
+        <div class="rounded-2xl border border-slate-800 overflow-hidden bg-[#161a1e]">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-[#0b0e11] text-slate-500 text-[10px] uppercase font-black tracking-widest border-b border-slate-800">
+              <tr>
+                <th class="p-3">Settled</th>
+                <th class="p-3">Side</th>
+                <th class="p-3 text-right">Conf.</th>
+                <th class="p-3 text-center">Correct</th>
+                <th class="p-3 text-right">PnL</th>
+              </tr>
+            </thead>
+            <tbody id="hist-sim" class="divide-y divide-slate-800/40"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <p class="text-[11px] text-slate-600 leading-relaxed">
+        Resolution: outcome tokens are matched via Gamma <code class="text-slate-500">GET /markets?clob_token_ids=…</code> (not CLOB <code class="text-slate-500">/markets/{id}</code> with a token id — that was the earlier bug). Results are cached in <code class="text-slate-500">logs/outcome_resolution_cache.json</code>.
+      </p>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function updateClocks() {
+      const now = new Date();
+      $("clock-utc").textContent = now.toLocaleTimeString("en-US", { timeZone: "UTC", hour12: false });
+      $("clock-et").textContent = now.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour12: false });
+    }
+    setInterval(updateClocks, 1000);
+    updateClocks();
+
+    document.querySelectorAll(".tab-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tab = btn.getAttribute("data-tab");
+        document.querySelectorAll(".tab-btn").forEach((b) => {
+          const on = b.getAttribute("data-tab") === tab;
+          b.className = "tab-btn px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider " + (on ? "bg-emerald-500/20 text-emerald-400" : "text-slate-500 hover:text-slate-300");
+        });
+        $("panel-live").classList.toggle("hidden", tab !== "live");
+        $("panel-history").classList.toggle("hidden", tab !== "history");
+        if (tab === "history") loadHistory();
+      });
+    });
+
+    function fmtEt(iso) {
+      if (!iso) return "—";
+      return new Date(iso).toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+    }
+
+    function fmtCents(x) {
+      if (x === null || x === undefined || !Number.isFinite(Number(x))) return "—";
+      return `${Math.round(Number(x) * 100)}¢`;
+    }
+
+    function fmtUsd(x) {
+      if (x === null || x === undefined || !Number.isFinite(Number(x))) return "—";
+      return `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    async function fetchLive() {
+      try {
+        const res = await fetch("/api/live");
+        const j = await res.json();
+        const d = j.dashboard;
+        $("lastSync").textContent = `Wallet sync: ${new Date(j.lastUpdate).toLocaleTimeString()}`;
+        const tv = j.wallet?.totalValue;
+        $("totalVal").textContent =
+          tv !== null && tv !== undefined && Number.isFinite(Number(tv)) ? fmtUsd(tv) : j.wallet?.address ? "—" : "Set POLYMARKET_FUNDER_ADDRESS";
+
+        if (!d) {
+          $("dash-empty").classList.remove("hidden");
+          return;
+        }
+        $("dash-empty").classList.add("hidden");
+
+        $("m-question").textContent = d.market?.question || "—";
+        $("m-slug").textContent = d.market?.slug || "—";
+        const tlm = d.market?.timeLeftMin;
+        $("m-time").textContent =
+          tlm !== null && tlm !== undefined && Number.isFinite(Number(tlm)) ? `${Number(tlm).toFixed(2)} min` : "—";
+        const slm = d.market?.settlementLeftMin;
+        $("m-settle").textContent =
+          slm !== null && slm !== undefined && Number.isFinite(Number(slm)) ? `${Number(slm).toFixed(2)} min` : "—";
+        $("m-up").textContent = fmtCents(d.market?.up);
+        $("m-down").textContent = fmtCents(d.market?.down);
+
+        const cs = d.model?.confidenceScore;
+        const dir = d.model?.confidenceDirection || "";
+        $("d-conf").textContent =
+          cs !== null && cs !== undefined && Number.isFinite(Number(cs)) ? `${Number(cs).toFixed(0)} (${dir})` : "—";
+        $("d-gpt").textContent =
+          d.model?.gptDirection != null
+            ? `${d.model.gptDirection} ${d.model.gptScore >= 0 ? "+" : ""}${Number(d.model.gptScore).toFixed(0)} (${d.model.gptConfidencePct}%)`
+            : "—";
+        const pu = d.model?.predictUp;
+        const pd = d.model?.predictDown;
+        $("d-predict").textContent =
+          pu != null && pd != null ? `↑ ${(Number(pu) * 100).toFixed(0)}% / ↓ ${(Number(pd) * 100).toFixed(0)}%` : "—";
+        $("d-signal").textContent = d.model?.signal || "—";
+        $("d-regime").textContent = d.model?.regime || "—";
+
+        $("d-ptb").textContent =
+          d.market?.priceToBeat != null ? `$${Number(d.market.priceToBeat).toLocaleString()}` : "—";
+        $("d-cl").textContent =
+          d.market?.chainlinkPrice != null ? `$${Number(d.market.chainlinkPrice).toLocaleString()}` : "—";
+        $("d-bn").textContent =
+          d.market?.binanceSpot != null ? `$${Number(d.market.binanceSpot).toLocaleString()}` : "—";
+
+        const tr = d.trading || {};
+        const ladder = Array.isArray(tr.confidenceMaxBidLadder) ? tr.confidenceMaxBidLadder : [];
+        const ladderStr = ladder.length
+          ? ladder.map((x) => `${x.threshold}+→${x.maxPrice}`).join(", ")
+          : "(none — uses MAX_BID_PRICE only)";
+        $("d-cfg").innerHTML = [
+          `<li><span class="text-slate-500">LIVE</span> ${tr.enableLiveTrading ? "on" : "off"}</li>`,
+          `<li>TRADE_THRESHOLD ≥ ${tr.tradeThreshold} · timing ≤ ${tr.tradeTimingSeconds}s · cooldown ${tr.cooldownMinutes}m</li>`,
+          `<li>POSITION_SIZE_USD $${tr.positionSizeUsd} · max bid ${tr.maxBidPrice}</li>`,
+          `<li>Ladder ${ladderStr}</li>`,
+          `<li>Budget ${fmtUsd(tr.balanceUsd)}</li>`
+        ].join("");
+
+        const arm = tr.wouldAttemptAutoBid;
+        $("d-arm").innerHTML = arm
+          ? '<span class="text-emerald-400">Conditions met — bot would fire on this tick (if LIVE and liquidity allow).</span>'
+          : '<span class="text-slate-500">Not arming: threshold, timing, cooldown, or market state blocks auto-bid.</span>';
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function fetchFills() {
+      try {
+        const res = await fetch("/api/data");
+        const data = await res.json();
+        const body = $("fillsTable");
+        if (!data.trades?.length) {
+          body.innerHTML =
+            '<tr><td colspan="6" class="p-6 text-center text-slate-500 text-sm">No fills in api.log yet.</td></tr>';
+          return;
+        }
+        body.innerHTML = data.trades
+          .map((t) => {
+            const et = fmtEt(t.ts);
+            let badge = "";
+            if (t.result === "WIN") {
+              badge = '<span class="bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded text-[10px] font-bold">WIN</span>';
+            } else if (t.result === "LOSS") {
+              badge = '<span class="bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded text-[10px] font-bold">LOSS</span>';
+            } else {
+              badge = '<span class="text-slate-500 text-[10px] animate-pulse">PENDING</span>';
+            }
+            const conf =
+              t.confidence !== null && t.confidence !== undefined && Number.isFinite(Number(t.confidence))
+                ? Number(t.confidence).toFixed(0)
+                : "—";
+            const sideClass =
+              t.side === "UP"
+                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                : "bg-rose-500/10 text-rose-400 border border-rose-500/20";
+            return `<tr class="hover:bg-slate-800/30 border-b border-slate-800/50">
+              <td class="p-4 font-mono text-[11px] text-slate-400">${et}</td>
+              <td class="p-4"><span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${sideClass}">${t.side}</span></td>
+              <td class="p-4 font-mono text-right text-white">${t.price}</td>
+              <td class="p-4 font-mono text-right text-blue-400">$${t.usd}</td>
+              <td class="p-4 text-center font-mono text-slate-300">${conf}</td>
+              <td class="p-4 text-center">${badge}</td>
+            </tr>`;
+          })
+          .join("");
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function historyQuery() {
+      const preset = $("hist-preset").value;
+      if (preset === "custom") {
+        const from = $("hist-from").value;
+        const to = $("hist-to").value;
+        if (!from || !to) return "hours=24";
+        const fromIso = new Date(from).toISOString();
+        const toIso = new Date(to).toISOString();
+        return `from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`;
+      }
+      return `hours=${preset}`;
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch("/api/history?" + historyQuery());
+        const j = await res.json();
+        const liveRows = j.live || [];
+        $("hist-live").innerHTML = liveRows.length
+          ? liveRows
+              .map((r) => {
+                const conf =
+                  r.confidence !== null && Number.isFinite(Number(r.confidence))
+                    ? Number(r.confidence).toFixed(0)
+                    : "—";
+                let oc = r.outcome;
+                let badge = "";
+                if (oc === "WIN") {
+                  badge = '<span class="text-emerald-400 font-bold">WIN</span>';
+                } else if (oc === "LOSS") {
+                  badge = '<span class="text-rose-400 font-bold">LOSS</span>';
+                } else if (oc === "PENDING") {
+                  badge = '<span class="text-slate-500 text-[10px]">PENDING</span>';
+                } else {
+                  badge = `<span class="text-slate-600">${oc || "—"}</span>`;
+                }
+                const sideClass =
+                  r.side === "UP"
+                    ? "text-emerald-400"
+                    : r.side === "DOWN"
+                      ? "text-rose-400"
+                      : "";
+                return `<tr class="border-b border-slate-800/50">
+                  <td class="p-3 font-mono text-[11px] text-slate-400">${fmtEt(r.timestamp)}</td>
+                  <td class="p-3 font-bold ${sideClass}">${r.side}</td>
+                  <td class="p-3 text-right font-mono">${conf}</td>
+                  <td class="p-3 text-right font-mono text-slate-300">${r.amountUsd ?? "—"}</td>
+                  <td class="p-3 text-xs">${r.status}</td>
+                  <td class="p-3 text-center">${badge}</td>
+                </tr>`;
+              })
+              .join("")
+          : '<tr><td colspan="6" class="p-6 text-center text-slate-500">No rows in range.</td></tr>';
+
+        const simRows = j.simulated || [];
+        $("hist-sim").innerHTML = simRows.length
+          ? simRows
+              .map((r) => {
+                const conf =
+                  r.confidenceScore !== null && Number.isFinite(Number(r.confidenceScore))
+                    ? Number(r.confidenceScore).toFixed(0)
+                    : "—";
+                const ok = String(r.correct) === "true";
+                const mark = ok ? "✓" : "✗";
+                const col = ok ? "text-emerald-400" : "text-rose-400";
+                return `<tr class="border-b border-slate-800/50">
+                  <td class="p-3 font-mono text-[11px] text-slate-400">${fmtEt(r.settledAt)}</td>
+                  <td class="p-3 font-bold">${r.side}</td>
+                  <td class="p-3 text-right font-mono">${conf}</td>
+                  <td class="p-3 text-center ${col} font-bold">${mark}</td>
+                  <td class="p-3 text-right font-mono">${r.pnlUsd ?? "—"}</td>
+                </tr>`;
+              })
+              .join("")
+          : '<tr><td colspan="5" class="p-6 text-center text-slate-500">No simulated trades in range.</td></tr>';
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    $("hist-preset").addEventListener("change", () => {
+      const c = $("hist-preset").value === "custom";
+      $("wrap-from").classList.toggle("hidden", !c);
+      $("wrap-to").classList.toggle("hidden", !c);
+    });
+    $("hist-apply").addEventListener("click", loadHistory);
+
+    fetchLive();
+    fetchFills();
+    setInterval(fetchLive, 4000);
+    setInterval(fetchFills, 12000);
+  </script>
+</body>
+</html>

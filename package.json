@@ -5,12 +5,14 @@
   "private": true,
   "scripts": {
     "start": "node src/index.js",
+    "dashboard": "node src/server.js",
     "test:trading": "ENABLE_LIVE_TRADING=true POLYMARKET_FUNDER_ADDRESS= POLY_FUNDER_ADDRESS= PRIVATE_KEY=0x0000000000000000000000000000000000000000000000000000000000000001 node --test src/trading/polymarketTrade.test.js"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.8.0",
     "dotenv": "^16.4.5",
     "ethers": "^6.11.1",
+    "express": "^4.22.1",
     "https-proxy-agent": "^7.0.6",
     "socks-proxy-agent": "^8.0.5",
     "undici": "^6.21.3",
