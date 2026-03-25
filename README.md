@@ -9,6 +9,7 @@ It combines:
 - Binance spot price for reference
 - Short-term TA snapshot (Heiken Ashi, RSI, MACD, VWAP, Delta 1/3m)
 - A simple live **Predict (LONG/SHORT %)** derived from the assistant’s current TA scoring
+- A separate **GPT-indicators** confidence line (derivatives + Polymarket microstructure factors)
 
 ## Requirements
 
@@ -189,6 +190,12 @@ Runs lightweight checks for the relayer/smart-wallet trading flow (e.g. skipped 
 ### Stop
 
 Press `Ctrl + C` in the terminal.
+
+### Simulation mode and indicator logs
+
+- Keep `ENABLE_LIVE_TRADING=false` (default) to run in simulation mode.
+- The bot logs GPT indicator scores/confidence over time to `logs/gpt_indicators.csv`.
+- Existing model/trade logs continue in `logs/signals.csv` and `logs/simulated_trades.csv`.
 
 ### Update to latest version
 

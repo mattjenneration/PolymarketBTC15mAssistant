@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { CONFIG } from "./config.js";
 import { fetchKlines, fetchLastPrice } from "./data/binance.js";
+import { fetchBinanceFuturesSnapshot } from "./data/binanceFutures.js";
 import { fetchChainlinkBtcUsd } from "./data/chainlink.js";
 import { startChainlinkPriceStream } from "./data/chainlinkWs.js";
 import { startPolymarketChainlinkPriceStream } from "./data/polymarketLiveWs.js";
@@ -21,6 +22,7 @@ import { detectRegime } from "./engines/regime.js";
 import { scoreDirection, applyTimeAwareness } from "./engines/probability.js";
 import { computeEdge, decide } from "./engines/edge.js";
 import { generateConfidenceScore } from "./engines/confidence.js";
+import { evaluateGptIndicators } from "./indicators/gptIndicators.js";
 import { appendCsvRow, formatNumber, formatPct, getCandleWindowTiming, sleep } from "./utils.js";
 import { startBinanceTradeStream } from "./data/binanceWs.js";
 import { executeTradeIfEnabled, getUsdcBalanceUsd } from "./trading/polymarketTrade.js";
@@ -428,6 +430,37 @@ const predictionCheckpointSeconds = Array.isArray(CONFIG.trading?.predictionChec
   : [120, 90, 60];
 const predictionHistoryByCheckpoint = Object.fromEntries(predictionCheckpointSeconds.map((sec) => [sec, []]));
 const activePredictionsByCheckpoint = Object.fromEntries(predictionCheckpointSeconds.map((sec) => [sec, null]));
+const gptConfidenceHistory = [];
+const gptIndicatorLogHeader = [
+  "timestamp",
+  "market_slug",
+  "time_left_min",
+  "legacy_confidence",
+  "legacy_direction",
+  "gpt_score",
+  "gpt_direction",
+  "gpt_confidence",
+  "funding_score",
+  "funding_confidence",
+  "funding_value",
+  "open_interest_score",
+  "open_interest_confidence",
+  "open_interest_value",
+  "long_short_score",
+  "long_short_confidence",
+  "long_short_value",
+  "basis_score",
+  "basis_confidence",
+  "basis_value",
+  "polymarket_micro_score",
+  "polymarket_micro_confidence",
+  "momentum_dislocation_score",
+  "momentum_dislocation_confidence",
+  "futures_basis_pct",
+  "futures_funding_rate",
+  "futures_open_interest_delta_pct",
+  "futures_long_short_ratio"
+];
 
 function renderPredictionHistoryRow(label, history) {
   if (!history.length) {
@@ -445,6 +478,19 @@ function renderPredictionHistoryRow(label, history) {
   }
 
   return kv(label, parts.join(" "));
+}
+
+function renderSignedTrend(history, maxShown = 16) {
+  const slice = (Array.isArray(history) ? history : []).slice(0, maxShown);
+  if (!slice.length) return `${ANSI.gray}n/a${ANSI.reset}`;
+
+  return slice
+    .map((v) => {
+      if (!Number.isFinite(Number(v)) || Number(v) === 0) return `${ANSI.gray}·${ANSI.reset}`;
+      if (Number(v) > 0) return `${ANSI.green}↑${ANSI.reset}`;
+      return `${ANSI.red}↓${ANSI.reset}`;
+    })
+    .join(" ");
 }
 
 function safeFileSlug(x) {
@@ -678,12 +724,13 @@ async function main() {
           ? Promise.resolve({ price: chainlinkWsPrice, updatedAt: chainlinkWsTick?.updatedAt ?? null, source: "chainlink_ws" })
           : fetchChainlinkBtcUsd();
 
-      const [klines1m, klines5m, lastPrice, chainlink, poly] = await Promise.all([
+      const [klines1m, klines5m, lastPrice, chainlink, poly, futuresSnapshot] = await Promise.all([
         fetchKlines({ interval: "1m", limit: 240 }),
         fetchKlines({ interval: "5m", limit: 200 }),
         fetchLastPrice(),
         chainlinkPromise,
-        fetchPolymarketSnapshot()
+        fetchPolymarketSnapshot(),
+        fetchBinanceFuturesSnapshot().catch(() => null)
       ]);
 
       const settlementMs = poly.ok && poly.market?.endDate ? new Date(poly.market.endDate).getTime() : null;
@@ -780,6 +827,13 @@ async function main() {
         spotDelta3m: delta3m
       });
 
+      const gptIndicators = evaluateGptIndicators({
+        futuresSnapshot,
+        polymarketSnapshot: poly,
+        spotDelta1m: delta1m,
+        spotDelta3m: delta3m
+      });
+
       const haNarrative = (consec.color ?? "").toLowerCase() === "green" ? "LONG" : (consec.color ?? "").toLowerCase() === "red" ? "SHORT" : "NEUTRAL";
       const rsiNarrative = narrativeFromSlope(rsiSlope);
       const macdNarrative = narrativeFromSign(macd?.hist ?? null);
@@ -855,6 +909,9 @@ async function main() {
         });
         confidenceHistoryBySlug[marketSlug] = history.slice(0, 12);
       }
+
+      gptConfidenceHistory.unshift(gptIndicators.score);
+      if (gptConfidenceHistory.length > 64) gptConfidenceHistory.length = 64;
 
       if (marketSlug && priceToBeatState.slug !== marketSlug) {
         priceToBeatState = { slug: marketSlug, value: null, setAtMs: null };
@@ -1060,6 +1117,22 @@ async function main() {
         : ANSI.reset;
 
       const confidenceLine = kv("Confidence:", `${confidence.score.toFixed(0)} (${confidence.direction})`);
+      const gptDirectionColor = gptIndicators.direction === "UP"
+        ? ANSI.green
+        : gptIndicators.direction === "DOWN"
+          ? ANSI.red
+          : ANSI.gray;
+      const gptLine = kv(
+        "GPT-indicators:",
+        `${gptDirectionColor}${gptIndicators.direction}${ANSI.reset} ${gptDirectionColor}${gptIndicators.score >= 0 ? "+" : ""}${gptIndicators.score.toFixed(0)}${ANSI.reset} (${gptIndicators.confidence}%)`
+      );
+      const topGpt = [...gptIndicators.indicators]
+        .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+        .slice(0, 3)
+        .map((x) => `${x.name}:${x.score >= 0 ? "+" : ""}${x.score}`)
+        .join(" | ");
+      const gptBreakdownLine = kv("GPT top:", topGpt || `${ANSI.gray}-${ANSI.reset}`);
+      const gptTrendLine = kv("GPT trend:", renderSignedTrend(gptConfidenceHistory, 14));
       const success120Row = renderPredictionHistoryRow("Success @120s:", predictionHistoryByCheckpoint[120] ?? []);
       const success90Row = renderPredictionHistoryRow("Success @90s:", predictionHistoryByCheckpoint[90] ?? []);
       const success60Row = renderPredictionHistoryRow("Success:", predictionHistoryByCheckpoint[60] ?? []);
@@ -1091,6 +1164,9 @@ async function main() {
         "",
         kv("TA Predict:", predictValue),
         confidenceLine,
+        gptLine,
+        gptBreakdownLine,
+        gptTrendLine,
         budgetLine,
         success120Row,
         success90Row,
@@ -1191,6 +1267,44 @@ async function main() {
         edge.edgeUp,
         edge.edgeDown,
         rec.action === "ENTER" ? `${rec.side}:${rec.phase}:${rec.strength}` : "NO_TRADE"
+      ]);
+
+      const fundingIndicator = gptIndicators.byName.funding;
+      const openInterestIndicator = gptIndicators.byName.open_interest;
+      const longShortIndicator = gptIndicators.byName.long_short;
+      const basisIndicator = gptIndicators.byName.basis;
+      const polymarketMicroIndicator = gptIndicators.byName.polymarket_micro;
+      const momentumDislocationIndicator = gptIndicators.byName.momentum_dislocation;
+
+      appendCsvRow("./logs/gpt_indicators.csv", gptIndicatorLogHeader, [
+        new Date().toISOString(),
+        marketSlug || "",
+        timeLeftMin.toFixed(3),
+        confidence.score.toFixed(2),
+        confidence.direction,
+        gptIndicators.score.toFixed(2),
+        gptIndicators.direction,
+        gptIndicators.confidence,
+        fundingIndicator?.score ?? "",
+        fundingIndicator?.confidence ?? "",
+        fundingIndicator?.value ?? "",
+        openInterestIndicator?.score ?? "",
+        openInterestIndicator?.confidence ?? "",
+        openInterestIndicator?.value ?? "",
+        longShortIndicator?.score ?? "",
+        longShortIndicator?.confidence ?? "",
+        longShortIndicator?.value ?? "",
+        basisIndicator?.score ?? "",
+        basisIndicator?.confidence ?? "",
+        basisIndicator?.value ?? "",
+        polymarketMicroIndicator?.score ?? "",
+        polymarketMicroIndicator?.confidence ?? "",
+        momentumDislocationIndicator?.score ?? "",
+        momentumDislocationIndicator?.confidence ?? "",
+        futuresSnapshot?.basisPct ?? "",
+        futuresSnapshot?.fundingRate ?? "",
+        futuresSnapshot?.openInterestDeltaPct ?? "",
+        futuresSnapshot?.longShortRatio ?? ""
       ]);
     } catch (err) {
       console.log("────────────────────────────");
