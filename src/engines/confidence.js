@@ -1,6 +1,4 @@
-import { clamp, normalizeOutcomeProb } from "../utils.js";
-import { CONFIG } from "../config.js";
-import { evaluateGptIndicators } from "../indicators/gptIndicators.js";
+import { clamp } from "../utils.js";
 
 function classifyHaBodyStrength(haCandles) {
   if (!Array.isArray(haCandles) || haCandles.length === 0) {
@@ -28,15 +26,14 @@ export function generateConfidenceScore({
   haCandles,
   polymarketSnapshot,
   spotDelta1m,
-  spotDelta3m,
-  futuresSnapshot
+  spotDelta3m
 }) {
-  let taScore = 0;
+  let score = 0;
 
   if (rsi !== null && rsi !== undefined && Number.isFinite(Number(rsi))) {
     const v = Number(rsi);
-    if (v < 30) taScore += 20;
-    else if (v > 70) taScore -= 20;
+    if (v < 30) score += 20;
+    else if (v > 70) score -= 20;
   }
 
   if (macd && macd.macd !== null && macd.signal !== null && macd.histDelta !== null) {
@@ -45,9 +42,9 @@ export function generateConfidenceScore({
     const histDelta = Number(macd.histDelta);
     if (Number.isFinite(macdLine) && Number.isFinite(signalLine) && Number.isFinite(histDelta)) {
       if (macdLine > signalLine && histDelta > 0) {
-        taScore += 25;
+        score += 25;
       } else if (macdLine < signalLine && histDelta < 0) {
-        taScore -= 25;
+        score -= 25;
       }
     }
   }
@@ -56,20 +53,20 @@ export function generateConfidenceScore({
     const p = Number(btcPrice);
     const v = Number(vwap);
     if (Number.isFinite(p) && Number.isFinite(v)) {
-      if (p > v) taScore += 15;
-      else if (p < v) taScore -= 15;
+      if (p > v) score += 15;
+      else if (p < v) score -= 15;
     }
   }
 
   if (Array.isArray(haCandles) && haCandles.length) {
     const { isLarge, isGreen } = classifyHaBodyStrength(haCandles);
-    if (isLarge && isGreen === true) taScore += 20;
-    else if (isLarge && isGreen === false) taScore -= 20;
+    if (isLarge && isGreen === true) score += 20;
+    else if (isLarge && isGreen === false) score -= 20;
   }
 
   if (polymarketSnapshot && btcPrice !== null && btcPrice !== undefined) {
-    const upProb = normalizeOutcomeProb(polymarketSnapshot.prices?.up ?? null);
-    const downProb = normalizeOutcomeProb(polymarketSnapshot.prices?.down ?? null);
+    const upPrice = polymarketSnapshot.prices?.up ?? null;
+    const downPrice = polymarketSnapshot.prices?.down ?? null;
 
     const spotIsPumping = (() => {
       const d1 = spotDelta1m;
@@ -79,8 +76,11 @@ export function generateConfidenceScore({
       return anyPos;
     })();
 
-    if (spotIsPumping && upProb !== null && upProb < 0.5) {
-      taScore += 20;
+    if (spotIsPumping && upPrice !== null && Number.isFinite(Number(upPrice))) {
+      const upProb = Number(upPrice) / 100;
+      if (upProb < 0.5) {
+        score += 20;
+      }
     }
 
     const spotIsDumping = (() => {
@@ -91,31 +91,31 @@ export function generateConfidenceScore({
       return anyNeg;
     })();
 
-    if (spotIsDumping && downProb !== null && downProb < 0.5) {
-      taScore -= 20;
+    if (spotIsDumping && downPrice !== null && Number.isFinite(Number(downPrice))) {
+      const downProb = Number(downPrice) / 100;
+      if (downProb < 0.5) {
+        score -= 20;
+      }
     }
   }
 
-  taScore = clamp(taScore, -100, 100);
-
-  const gptIndicators = evaluateGptIndicators({
-    futuresSnapshot,
-    polymarketSnapshot,
-    spotDelta1m,
-    spotDelta3m
-  });
-
-  const w = CONFIG.confidenceAuxiliaryWeight;
-  const score = clamp(taScore + gptIndicators.score * w, -100, 100);
+  score = clamp(score, -100, 100);
 
   const direction = score > 0 ? "UP" : score < 0 ? "DOWN" : "FLAT";
 
   return {
     score,
     direction,
-    taScore,
-    auxiliaryScore: gptIndicators.score,
-    gptIndicators
+    // Keep legacy fields so dashboard/log writers remain compatible.
+    taScore: score,
+    auxiliaryScore: 0,
+    gptIndicators: {
+      score: 0,
+      direction: "FLAT",
+      confidence: 0,
+      indicators: [],
+      byName: {}
+    }
   };
 }
 
