@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG } from "./config.js";
 import { errorToRedactedLogString } from "./logRedact.js";
+import { getUsdcBalanceUsd } from "./trading/polymarketTrade.js";
 
 process.on("unhandledRejection", (reason) => {
   console.error("[btc-dashboard] Unhandled rejection:", errorToRedactedLogString(reason));
@@ -82,13 +83,11 @@ function readCsv(filePath) {
   return rows;
 }
 
-async function getAccountValue() {
+/** On-chain USDC balance for POLYMARKET_FUNDER_ADDRESS (same source as bot Budget). */
+async function getFunderUsdcBalanceUsd() {
   if (!FUNDER_ADDRESS) return null;
   try {
-    const res = await fetch(`https://data-api.polymarket.com/total-value?user=${FUNDER_ADDRESS}`);
-    if (!res.ok) return null;
-    const data = await res.json();
-    return parseFloat(data.totalValue ?? data.total_value ?? 0) || 0;
+    return await getUsdcBalanceUsd();
   } catch {
     return null;
   }
@@ -149,7 +148,7 @@ function reloadOutcomeCache() {
 async function refreshCache() {
   try {
     reloadOutcomeCache();
-    const totalValue = await getAccountValue();
+    const totalValue = await getFunderUsdcBalanceUsd();
     const trades = [];
 
     if (fs.existsSync(API_LOG)) {
@@ -318,7 +317,7 @@ function parseNumberOrNull(x) {
 
 app.get("/api/live", async (req, res) => {
   const dashboard = readDashboard();
-  const totalValue = await getAccountValue();
+  const totalValue = await getFunderUsdcBalanceUsd();
   res.json({
     dashboard,
     wallet: { address: FUNDER_ADDRESS || null, totalValue },

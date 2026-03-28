@@ -23,21 +23,9 @@
           <button type="button" data-tab="history" class="tab-btn px-4 py-2 rounded-md text-xs font-bold uppercase tracking-wider text-slate-500 hover:text-slate-300">History</button>
         </nav>
         <div class="text-right w-full lg:w-auto">
-          <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest">Account (Polymarket)</p>
+          <p class="text-slate-500 text-[10px] font-bold uppercase tracking-widest">USDC (funding wallet)</p>
           <p id="totalVal" class="text-4xl font-black text-white tracking-tighter">—</p>
           <p id="lastSync" class="text-[10px] text-slate-600 font-mono mt-1"></p>
-          <div class="mt-3">
-            <a
-              id="claim-btn"
-              href="https://polymarket.com"
-              target="_blank"
-              rel="noopener noreferrer"
-              class="inline-flex items-center justify-center rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-white"
-              title="Open Polymarket to claim winnings"
-            >
-              Claim
-            </a>
-          </div>
         </div>
       </div>
     </header>
@@ -348,19 +336,12 @@
       updateHistSortHeaders();
     }
 
-    function polymarketClaimHref(address) {
-      const base = "https://polymarket.com/profile";
-      const addr = String(address || "").trim();
-      return addr ? `${base}/${encodeURIComponent(addr)}` : base;
-    }
-
     async function fetchLive() {
       try {
         const res = await fetch("/api/live");
         const j = await res.json();
         const d = j.dashboard;
-        $("claim-btn").href = polymarketClaimHref(j.wallet?.address);
-        $("lastSync").textContent = `Wallet sync: ${new Date(j.lastUpdate).toLocaleTimeString()}`;
+        $("lastSync").textContent = `USDC sync: ${new Date(j.lastUpdate).toLocaleTimeString()}`;
         const tv = j.wallet?.totalValue;
         $("totalVal").textContent =
           tv !== null && tv !== undefined && Number.isFinite(Number(tv)) ? fmtUsd(tv) : j.wallet?.address ? "—" : "Set POLYMARKET_FUNDER_ADDRESS";
@@ -413,6 +394,9 @@
           d.market?.binanceSpot != null ? `$${Number(d.market.binanceSpot).toLocaleString()}` : "—";
 
         const tr = d.trading || {};
+        const liveBal = j.wallet?.totalValue;
+        const budgetUsd =
+          liveBal !== null && liveBal !== undefined && Number.isFinite(Number(liveBal)) ? Number(liveBal) : tr.balanceUsd;
         const ladder = Array.isArray(tr.confidenceMaxBidLadder) ? tr.confidenceMaxBidLadder : [];
         const ladderStr = ladder.length
           ? ladder.map((x) => `${x.threshold}+→${x.maxPrice}`).join(", ")
@@ -425,7 +409,7 @@
           `<li>timing ≤ ${tr.tradeTimingSeconds}s · cooldown ${tr.cooldownMinutes}m</li>`,
           `<li>POSITION_SIZE_USD $${tr.positionSizeUsd} · max bid ${tr.maxBidPrice}</li>`,
           `<li>Ladder ${ladderStr}</li>`,
-          `<li>Budget ${fmtUsd(tr.balanceUsd)}</li>`,
+          `<li>Budget ${fmtUsd(budgetUsd)}</li>`,
           tr.circuitBreakerActive
             ? `<li class="text-amber-400">Circuit breaker: pause ~${(tr.circuitBreakerRemainingMin ?? 0).toFixed(1)}m left</li>`
             : ""
