@@ -66,6 +66,7 @@
           <div class="space-y-2 text-sm">
             <p><span class="text-slate-500">Confidence</span> <span id="d-conf" class="font-mono text-white font-bold">—</span></p>
             <p><span class="text-slate-500">Context</span> <span id="d-gpt" class="font-mono text-slate-300">—</span></p>
+            <p><span class="text-slate-500">PolySwings</span> <span id="d-polyswings" class="font-mono text-cyan-300/90 text-xs leading-relaxed block mt-0.5">—</span></p>
             <p><span class="text-slate-500">TA predict</span> <span id="d-predict" class="font-mono text-slate-300">—</span></p>
             <p><span class="text-slate-500">Signal</span> <span id="d-signal" class="font-mono text-emerald-400 font-bold">—</span></p>
             <p><span class="text-slate-500">Regime</span> <span id="d-regime" class="font-mono text-slate-400">—</span></p>
@@ -379,6 +380,17 @@
           d.model?.gptDirection != null
             ? `${d.model.gptDirection} ${d.model.gptScore >= 0 ? "+" : ""}${Number(d.model.gptScore).toFixed(0)} (${d.model.gptConfidencePct}%)`
             : "—";
+        const ps = d.model?.polySwings;
+        $("d-polyswings").textContent =
+          ps && ps.summary != null
+            ? `${ps.direction ?? "FLAT"} ${Number(ps.score) >= 0 ? "+" : ""}${Number(ps.score).toFixed(0)} — ${ps.summary}`
+            : ps
+              ? `${ps.direction ?? "FLAT"} ${Number(ps.score) >= 0 ? "+" : ""}${Number(ps.score).toFixed(0)}`
+              : "—";
+        $("d-polyswings").title =
+          ps && (ps.sampleCount != null || ps.completedRounds != null)
+            ? `samples=${ps.sampleCount ?? "—"} · rounds=${ps.completedRounds ?? "—"} · termAcc=${ps.terminalAccuracy != null ? (Number(ps.terminalAccuracy) * 100).toFixed(0) + "%" : "—"}`
+            : "";
         const pu = d.model?.predictUp;
         const pd = d.model?.predictDown;
         $("d-predict").textContent =
