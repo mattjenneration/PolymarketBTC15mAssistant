@@ -89,6 +89,27 @@
         </div>
       </div>
 
+      <div class="rounded-2xl border border-amber-900/30 bg-[#161a1e] p-5 shadow-xl">
+        <h2 class="text-[10px] font-black uppercase tracking-widest text-amber-500/90 mb-2">Manual bid override</h2>
+        <p class="text-xs text-slate-500 mb-4 leading-relaxed">
+          Queues one live buy on the <span class="text-slate-400">current dashboard market</span> (same <code class="text-slate-400">POSITION_SIZE_USD</code> as the bot). Skips model, timing window, cooldown, circuit breaker, and auto guards. Order placement still requires <code class="text-slate-400">ENABLE_LIVE_TRADING=true</code>, USDC, and your max-bid / ladder rules.
+        </p>
+        <div id="manual-bid-secret-wrap" class="hidden mb-3">
+          <label class="text-[10px] uppercase font-bold text-slate-500 block">Dashboard secret</label>
+          <input type="password" id="manual-bid-secret" autocomplete="off" class="mt-1 w-full max-w-md rounded-lg bg-[#0b0e11] border border-slate-700 px-3 py-2 text-sm font-mono" placeholder="DASHBOARD_MANUAL_BID_SECRET" />
+        </div>
+        <div class="flex flex-wrap gap-3">
+          <button type="button" id="manual-bid-up" class="rounded-xl px-5 py-3 text-sm font-black uppercase tracking-wide bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-500/40 disabled:opacity-40 disabled:pointer-events-none transition-colors">
+            Bid UP
+          </button>
+          <button type="button" id="manual-bid-down" class="rounded-xl px-5 py-3 text-sm font-black uppercase tracking-wide bg-rose-600 hover:bg-rose-500 text-white border border-rose-500/40 disabled:opacity-40 disabled:pointer-events-none transition-colors">
+            Bid DOWN
+          </button>
+        </div>
+        <p id="manual-bid-pending" class="mt-3 text-xs font-mono text-cyan-400/90 min-h-[1.25rem]"></p>
+        <p id="manual-bid-feedback" class="mt-1 text-xs font-mono text-slate-500 min-h-[1.25rem]"></p>
+      </div>
+
       <div>
         <h2 class="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">Recent CLOB fills (api.log)</h2>
         <div class="rounded-2xl border border-slate-800 overflow-x-auto bg-[#161a1e] shadow-xl">
@@ -183,6 +204,56 @@
     const HIST_SORT_ICONS = { asc: "↑", desc: "↓" };
     const histLiveSort = { key: "timestamp", dir: "desc" };
     let histLiveRows = [];
+    let lastMarketSlug = "";
+    let manualBidAuthRequired = false;
+    let manualFeedbackTimer = null;
+
+    function setManualFeedback(text, cls) {
+      const el = $("manual-bid-feedback");
+      el.textContent = text || "";
+      el.className = "mt-1 text-xs font-mono min-h-[1.25rem] " + (cls || "text-slate-500");
+      if (manualFeedbackTimer) clearTimeout(manualFeedbackTimer);
+      if (text) {
+        manualFeedbackTimer = setTimeout(() => {
+          el.textContent = "";
+          el.className = "mt-1 text-xs font-mono text-slate-500 min-h-[1.25rem]";
+        }, 8000);
+      }
+    }
+
+    async function postManualBid(side) {
+      if (!lastMarketSlug) {
+        setManualFeedback("No market loaded yet — wait for the bot to write dashboard.json.", "text-amber-400");
+        return;
+      }
+      if (manualBidAuthRequired) {
+        const sec = $("manual-bid-secret").value.trim();
+        if (!sec) {
+          setManualFeedback("Set DASHBOARD_MANUAL_BID_SECRET in this field first.", "text-amber-400");
+          return;
+        }
+      }
+      try {
+        const body = { side, marketSlug: lastMarketSlug };
+        if (manualBidAuthRequired) body.secret = $("manual-bid-secret").value.trim();
+        const res = await fetch("/api/manual-bid", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setManualFeedback(j.error === "unauthorized" ? "Unauthorized — check secret." : (j.error || `HTTP ${res.status}`), "text-rose-400");
+          return;
+        }
+        setManualFeedback(`Queued ${side} for this market. Bot consumes within one poll (~2s).`, "text-emerald-400/90");
+      } catch (e) {
+        setManualFeedback(String(e.message || e), "text-rose-400");
+      }
+    }
+
+    $("manual-bid-up").addEventListener("click", () => postManualBid("UP"));
+    $("manual-bid-down").addEventListener("click", () => postManualBid("DOWN"));
 
     function updateClocks() {
       const now = new Date();
@@ -342,12 +413,19 @@
         const res = await fetch("/api/live");
         const j = await res.json();
         const d = j.dashboard;
+        manualBidAuthRequired = Boolean(j.manualBidAuthRequired);
+        $("manual-bid-secret-wrap").classList.toggle("hidden", !manualBidAuthRequired);
+
         $("lastSync").textContent = `USDC sync: ${new Date(j.lastUpdate).toLocaleTimeString()}`;
         const tv = j.wallet?.totalValue;
         $("totalVal").textContent =
           tv !== null && tv !== undefined && Number.isFinite(Number(tv)) ? fmtUsd(tv) : j.wallet?.address ? "—" : "Set POLYMARKET_FUNDER_ADDRESS";
 
         if (!d) {
+          lastMarketSlug = "";
+          $("manual-bid-pending").textContent = "";
+          $("manual-bid-up").disabled = true;
+          $("manual-bid-down").disabled = true;
           $("dash-empty").classList.remove("hidden");
           return;
         }
@@ -355,6 +433,7 @@
 
         $("m-question").textContent = d.market?.question || "—";
         $("m-slug").textContent = d.market?.slug || "—";
+        lastMarketSlug = typeof d.market?.slug === "string" ? d.market.slug.trim() : "";
         const tlm = d.market?.timeLeftMin;
         $("m-time").textContent =
           tlm !== null && tlm !== undefined && Number.isFinite(Number(tlm)) ? `${Number(tlm).toFixed(2)} min` : "—";
@@ -432,6 +511,39 @@
         $("d-arm").innerHTML = arm
           ? '<span class="text-emerald-400">All guards passed — bot would fire on this tick (if LIVE and liquidity allow).</span>'
           : `<span class="text-slate-500">Not arming${block ? `: <code class="text-slate-400">${block}</code>` : ""}.</span>`;
+
+        const pend = j.manualBidPending;
+        const pendEl = $("manual-bid-pending");
+        if (pend && lastMarketSlug && pend.marketSlug === lastMarketSlug) {
+          if (pend.expired) {
+            pendEl.textContent = "Queued manual bid expired (~3m) — click again if you still want it.";
+            pendEl.className = "mt-3 text-xs font-mono text-amber-400/90 min-h-[1.25rem]";
+          } else {
+            pendEl.textContent = `Awaiting bot: ${pend.side} (queued ${new Date(pend.requestedAt).toLocaleTimeString()})`;
+            pendEl.className = "mt-3 text-xs font-mono text-cyan-400/90 min-h-[1.25rem]";
+          }
+        } else if (pend && lastMarketSlug && pend.marketSlug !== lastMarketSlug) {
+          pendEl.textContent = `Queued ${pend.side} for a different market slug than the one shown — bot will ignore until it matches or the queue expires.`;
+          pendEl.className = "mt-3 text-xs font-mono text-amber-400/80 min-h-[1.25rem]";
+        } else {
+          pendEl.textContent = "";
+          pendEl.className = "mt-3 text-xs font-mono min-h-[1.25rem]";
+        }
+
+        const liveOn = Boolean(tr.enableLiveTrading);
+        const canManual = Boolean(lastMarketSlug);
+        $("manual-bid-up").disabled = !canManual;
+        $("manual-bid-down").disabled = !canManual;
+        $("manual-bid-up").title = !canManual
+          ? "Wait for market slug from the bot"
+          : !liveOn
+            ? "LIVE is off — request will queue but the bot will not place orders"
+            : "Queue manual UP bid";
+        $("manual-bid-down").title = !canManual
+          ? "Wait for market slug from the bot"
+          : !liveOn
+            ? "LIVE is off — request will queue but the bot will not place orders"
+            : "Queue manual DOWN bid";
       } catch (e) {
         console.error(e);
       }

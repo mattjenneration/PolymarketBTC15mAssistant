@@ -36,6 +36,55 @@ import { getAccountInfo } from "./trading/polymarketRelayerClient.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+
+const MANUAL_BID_PATH = path.join("./logs", "manual_bid_request.json");
+const MANUAL_BID_TTL_MS = 180_000;
+
+/**
+ * Consumes `logs/manual_bid_request.json` when it targets the current market and the snapshot is tradeable.
+ * Bypasses model/timing/guards; execution still uses executeTradeIfEnabled (LIVE, balance, max bid, etc.).
+ */
+function takeManualBidRequestForExecution(currentMarketSlug, polyOk) {
+  if (!polyOk || !currentMarketSlug || !fs.existsSync(MANUAL_BID_PATH)) return null;
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(MANUAL_BID_PATH, "utf8"));
+  } catch {
+    try {
+      fs.unlinkSync(MANUAL_BID_PATH);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+  const side = data.side === "UP" || data.side === "DOWN" ? data.side : null;
+  const slug = typeof data.marketSlug === "string" ? data.marketSlug.trim() : "";
+  const reqAt = new Date(data.requestedAt).getTime();
+  if (!side || !slug || !Number.isFinite(reqAt)) {
+    try {
+      fs.unlinkSync(MANUAL_BID_PATH);
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+  if (Date.now() - reqAt > MANUAL_BID_TTL_MS) {
+    try {
+      fs.unlinkSync(MANUAL_BID_PATH);
+    } catch {
+      // ignore
+    }
+    console.log("[manual bid] request expired (TTL)");
+    return null;
+  }
+  if (slug !== currentMarketSlug) return null;
+  try {
+    fs.unlinkSync(MANUAL_BID_PATH);
+  } catch {
+    // ignore
+  }
+  return { side };
+}
 import { applyGlobalProxyFromEnv } from "./net/proxy.js";
 
 function parseArgValue(flag) {
@@ -1403,6 +1452,30 @@ async function main() {
       } else if (!poly.ok) liveTradeBlockReason = "bad_market";
       else if (!liveGuardResult.ok) liveTradeBlockReason = liveGuardResult.reason;
 
+      const manualQueued = (() => {
+        if (!fs.existsSync(MANUAL_BID_PATH)) return null;
+        try {
+          const data = JSON.parse(fs.readFileSync(MANUAL_BID_PATH, "utf8"));
+          const side = data.side === "UP" || data.side === "DOWN" ? data.side : null;
+          const slug = typeof data.marketSlug === "string" ? data.marketSlug.trim() : "";
+          const reqAt = new Date(data.requestedAt).getTime();
+          if (!side || !slug || !Number.isFinite(reqAt)) return null;
+          if (Date.now() - reqAt > MANUAL_BID_TTL_MS) return null;
+          return { side, slug };
+        } catch {
+          return null;
+        }
+      })();
+      const manualLine =
+        manualQueued && marketSlug
+          ? kv(
+              "Manual bid:",
+              manualQueued.slug === marketSlug
+                ? `${ANSI.yellow}queued ${manualQueued.side}${ANSI.reset} (dashboard)`
+                : `${ANSI.gray}queued ${manualQueued.side} for other market${ANSI.reset}`
+            )
+          : null;
+
       const liveBidLine = kv(
         "Live arm:",
         CONFIG.trading.enableLiveTrading
@@ -1427,6 +1500,7 @@ async function main() {
         ...(quiet ? [] : [gptBreakdownLine, gptTrendLine]),
         budgetLine,
         liveBidLine,
+        ...(manualLine ? [manualLine] : []),
         ...(quiet
           ? []
           : [
@@ -1544,7 +1618,50 @@ async function main() {
 
       const nowMs = Date.now();
 
-      if (shouldAttemptRealTrade) {
+      let manualAttemptedThisTick = false;
+      const manualTake = CONFIG.trading.enableLiveTrading
+        ? takeManualBidRequestForExecution(marketSlug, poly.ok)
+        : null;
+      if (manualTake) {
+        manualAttemptedThisTick = true;
+        const ladderConfidence = manualTake.side === "UP" ? 100 : -100;
+        const result = await executeTradeIfEnabled({
+          side: manualTake.side,
+          amountUsd: CONFIG.trading.positionSizeUsd,
+          marketSnapshot: poly,
+          confidenceScore: ladderConfidence
+        });
+        queueBidDecision({
+          marketSlug,
+          side: manualTake.side,
+          confidenceScore: ladderConfidence,
+          taPredictScore,
+          status: result.status,
+          reason:
+            result.status === "ok"
+              ? "manual_dashboard"
+              : `manual_dashboard:${result.reason ?? result.errorMessage ?? ""}`,
+          amountUsd: CONFIG.trading.positionSizeUsd,
+          orderId: result.orderId ?? "",
+          tokenId: manualTake.side === "UP" ? poly.tokens?.upTokenId ?? "" : poly.tokens?.downTokenId ?? "",
+          nowIso: new Date().toISOString()
+        });
+
+        if (result.status === "ok") {
+          console.log(
+            `Manual live trade: ${manualTake.side} $${CONFIG.trading.positionSizeUsd.toFixed(2)} orderId=${result.orderId ?? "-"}`
+          );
+        } else {
+          const reasonStr = result.reason ?? result.errorMessage ?? "";
+          const addrStr = result.reason === "insufficient_usdc" && result.walletAddress
+            ? ` from ${result.walletAddress}`
+            : "";
+          console.log(`Manual trade skipped: ${result.status} (${reasonStr}${addrStr})`);
+        }
+        lastRealTradeAtMs = nowMs;
+      }
+
+      if (shouldAttemptRealTrade && !manualAttemptedThisTick) {
         const result = await executeTradeIfEnabled({
           side: liveTradeSide,
           amountUsd: CONFIG.trading.positionSizeUsd,
@@ -1599,7 +1716,8 @@ async function main() {
       const logSignalsNow =
         CONFIG.trading.logSignalsThrottleMs <= 0
         || Date.now() - lastSignalsLogMs >= CONFIG.trading.logSignalsThrottleMs
-        || shouldAttemptRealTrade;
+        || shouldAttemptRealTrade
+        || manualAttemptedThisTick;
 
       if (logSignalsNow) {
         lastSignalsLogMs = Date.now();

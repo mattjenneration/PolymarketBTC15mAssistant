@@ -16,12 +16,16 @@ const PORT = Number(process.env.DASHBOARD_PORT ?? "3000");
 const LOG_DIR = path.resolve(process.cwd(), "logs");
 const API_LOG = path.join(LOG_DIR, "api.log");
 const DASHBOARD_JSON = path.join(LOG_DIR, "dashboard.json");
+const MANUAL_BID_FILE = path.join(LOG_DIR, "manual_bid_request.json");
+const MANUAL_BID_TTL_MS = 180_000;
+const DASHBOARD_MANUAL_BID_SECRET = (process.env.DASHBOARD_MANUAL_BID_SECRET || "").trim();
 const CACHE_FILE = path.join(LOG_DIR, "outcome_resolution_cache.json");
 const GAMMA_BASE = CONFIG.gammaBaseUrl.replace(/\/$/, "");
 
 const FUNDER_ADDRESS = (CONFIG.polymarket?.funderAddress || "").trim();
 
 const app = express();
+app.use(express.json({ limit: "8kb" }));
 app.use(express.static(__dirname));
 
 let outcomeCache = {};
@@ -304,6 +308,23 @@ function readDashboard() {
   }
 }
 
+function readManualBidRequestForApi() {
+  if (!fs.existsSync(MANUAL_BID_FILE)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(MANUAL_BID_FILE, "utf-8"));
+    const side = data.side === "UP" || data.side === "DOWN" ? data.side : null;
+    const marketSlug = typeof data.marketSlug === "string" ? data.marketSlug.trim() : "";
+    const requestedAt = typeof data.requestedAt === "string" ? data.requestedAt : null;
+    const t = requestedAt ? new Date(requestedAt).getTime() : NaN;
+    if (!side || !marketSlug || !Number.isFinite(t)) return null;
+    const ageMs = Date.now() - t;
+    const expired = ageMs > MANUAL_BID_TTL_MS;
+    return { side, marketSlug, requestedAt, ageMs, expired };
+  } catch {
+    return null;
+  }
+}
+
 function parseIsoOrNull(s) {
   const t = new Date(s).getTime();
   return Number.isFinite(t) ? t : null;
@@ -320,9 +341,36 @@ app.get("/api/live", async (req, res) => {
   const totalValue = await getFunderUsdcBalanceUsd();
   res.json({
     dashboard,
+    manualBidPending: readManualBidRequestForApi(),
+    manualBidAuthRequired: Boolean(DASHBOARD_MANUAL_BID_SECRET),
     wallet: { address: FUNDER_ADDRESS || null, totalValue },
     lastUpdate: new Date().toISOString()
   });
+});
+
+app.post("/api/manual-bid", (req, res) => {
+  if (DASHBOARD_MANUAL_BID_SECRET) {
+    const bearer = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "").trim();
+    const bodySecret = typeof req.body?.secret === "string" ? req.body.secret.trim() : "";
+    if (bearer !== DASHBOARD_MANUAL_BID_SECRET && bodySecret !== DASHBOARD_MANUAL_BID_SECRET) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return;
+    }
+  }
+  const side = req.body?.side === "UP" || req.body?.side === "DOWN" ? req.body.side : null;
+  const marketSlug = typeof req.body?.marketSlug === "string" ? req.body.marketSlug.trim() : "";
+  if (!side || !marketSlug) {
+    res.status(400).json({ ok: false, error: "need_side_and_marketSlug" });
+    return;
+  }
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const payload = { side, marketSlug, requestedAt: new Date().toISOString() };
+    fs.writeFileSync(MANUAL_BID_FILE, JSON.stringify(payload), "utf8");
+    res.json({ ok: true, ...payload });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "write_failed", message: String(err?.message || err) });
+  }
 });
 
 app.get("/api/data", (req, res) => res.json(cachedData));
