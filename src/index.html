@@ -89,6 +89,15 @@
         </div>
       </div>
 
+      <div id="sim-panel" class="hidden rounded-2xl border border-slate-800 bg-[#161a1e] p-5 shadow-xl">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-[10px] font-black uppercase tracking-widest text-cyan-400/90">Simulation scenarios</h2>
+          <p id="sim-overall" class="text-xs font-mono text-slate-300">—</p>
+        </div>
+        <p id="sim-summary" class="mt-2 text-xs font-mono text-slate-400">—</p>
+        <div id="sim-bars" class="mt-4 space-y-2"></div>
+      </div>
+
       <div class="rounded-2xl border border-amber-900/30 bg-[#161a1e] p-5 shadow-xl">
         <h2 class="text-[10px] font-black uppercase tracking-widest text-amber-500/90 mb-2">Manual bid override</h2>
         <p class="text-xs text-slate-500 mb-4 leading-relaxed">
@@ -289,6 +298,13 @@
     function fmtUsd(x) {
       if (x === null || x === undefined || !Number.isFinite(Number(x))) return "—";
       return `$${Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
+
+    function fmtSignedUsd(x) {
+      if (x === null || x === undefined || !Number.isFinite(Number(x))) return "—";
+      const n = Number(x);
+      const sign = n >= 0 ? "+" : "-";
+      return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
 
     function sortRank(v) {
@@ -511,6 +527,38 @@
         $("d-arm").innerHTML = arm
           ? '<span class="text-emerald-400">All guards passed — bot would fire on this tick (if LIVE and liquidity allow).</span>'
           : `<span class="text-slate-500">Not arming${block ? `: <code class="text-slate-400">${block}</code>` : ""}.</span>`;
+
+        const sim = tr.simulation;
+        const simPanel = $("sim-panel");
+        if (sim && Array.isArray(sim.scenarios) && sim.scenarios.length) {
+          simPanel.classList.remove("hidden");
+          $("sim-summary").textContent = sim.summaryLine || "—";
+          $("sim-overall").textContent = `Overall ${fmtSignedUsd(sim.overallPnlUsd)}`;
+
+          const maxAbs = Math.max(
+            1,
+            ...sim.scenarios.map((s) => Math.abs(Number(s.totalPnlUsd || 0)))
+          );
+          $("sim-bars").innerHTML = sim.scenarios
+            .map((s) => {
+              const pnl = Number(s.totalPnlUsd || 0);
+              const width = Math.max(2, Math.round((Math.abs(pnl) / maxAbs) * 100));
+              const positive = pnl >= 0;
+              const barClass = positive ? "bg-emerald-500/70" : "bg-rose-500/70";
+              return `<div class="space-y-1">
+                <div class="flex justify-between items-center text-xs font-mono">
+                  <span class="text-slate-300">${s.label} · risk ${Number(s.riskAppetite).toFixed(2)} · th ${Number(s.threshold).toFixed(1)}</span>
+                  <span class="${positive ? "text-emerald-400" : "text-rose-400"}">${fmtSignedUsd(pnl)} · rounds ${s.rounds} · bids ${s.totalBids} · resets ${s.resets}</span>
+                </div>
+                <div class="h-2 rounded bg-slate-800 overflow-hidden">
+                  <div class="h-full ${barClass}" style="width:${width}%"></div>
+                </div>
+              </div>`;
+            })
+            .join("");
+        } else {
+          simPanel.classList.add("hidden");
+        }
 
         const pend = j.manualBidPending;
         const pendEl = $("manual-bid-pending");

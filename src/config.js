@@ -45,6 +45,8 @@ export const CONFIG = {
     timeframe: process.env.BOT_TIMEFRAME || "5m",
     tradeThreshold: Number(process.env.TRADE_THRESHOLD ?? "75"),
     positionSizeUsd: Number(process.env.POSITION_SIZE_USD ?? "10"),
+    riskAppetite: Math.max(0, Math.min(1, Number(process.env.RISK_APPETITE ?? "0.5"))),
+    riskAppetiteStep: Math.max(0, Math.min(0.5, Number(process.env.RISK_APPETITE_STEP ?? "0.2"))),
     cooldownMinutes: Number(process.env.COOLDOWN_MINUTES ?? "15"),
     enableLiveTrading: (process.env.ENABLE_LIVE_TRADING || "false").toLowerCase() === "true",
     privateKey: process.env.PRIVATE_KEY || "",

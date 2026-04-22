@@ -33,6 +33,7 @@ import { startBinanceTradeStream } from "./data/binanceWs.js";
 import { executeTradeIfEnabled, getUsdcBalanceUsd } from "./trading/polymarketTrade.js";
 import { evaluateLiveTradeGuards } from "./trading/liveTradeGuards.js";
 import { getAccountInfo } from "./trading/polymarketRelayerClient.js";
+import { createScenarioSimulator } from "./simulation/scenarioSimulator.js";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
@@ -211,101 +212,11 @@ function countVwapCrosses(closes, vwapSeries, lookback) {
   return crosses;
 }
 
-const simulatedTradesBySlug = {};
-let simulatedBudget = CONFIG.trading.simBudgetUsd ?? 0;
-let simulatedPnl = 0;
 const confidenceHistoryBySlug = {};
 const recentLiveTradeResults = [];
 let circuitBreakerUntilMs = 0;
 let lastSignalsLogMs = 0;
 
-function maybeSimulateBestEffortTrade({
-  marketSlug,
-  timeLeftMin,
-  marketUp,
-  marketDown,
-  ledger,
-  confidence,
-  now = new Date()
-}) {
-  if (!marketSlug) return null;
-
-  if (timeLeftMin === null || !Number.isFinite(Number(timeLeftMin))) return null;
-  const remaining = Number(timeLeftMin);
-  const minWindow = 1.5;
-  const maxWindow = 2;
-  if (remaining > maxWindow || remaining < minWindow) return null;
-
-  const history = confidenceHistoryBySlug[marketSlug] ?? [];
-  const nowMs = now.getTime();
-  const recentWindowMs = 60_000;
-  const recent = history.filter((h) => Number.isFinite(Number(h.ts)) && nowMs - h.ts <= recentWindowMs);
-
-  let best = null;
-  for (const h of recent) {
-    if (!Number.isFinite(Number(h.score))) continue;
-    if (!best || Math.abs(h.score) > Math.abs(best.score)) {
-      best = h;
-    }
-  }
-
-  const chosenScore = best?.score ?? confidence?.score ?? null;
-  const chosenDir = best?.direction ?? null;
-
-  let side = null;
-  if (chosenDir === "UP" || chosenDir === "DOWN") {
-    side = chosenDir;
-  } else if (Number.isFinite(Number(chosenScore))) {
-    side = Number(chosenScore) >= 0 ? "UP" : "DOWN";
-  }
-
-  if (!side) return null;
-
-  const rawPrice = side === "UP" ? marketUp : marketDown;
-  if (rawPrice === null || rawPrice === undefined || !Number.isFinite(Number(rawPrice))) return null;
-
-  const priceUsd = Number(rawPrice);
-  if (priceUsd <= 0 || !Number.isFinite(priceUsd)) return null;
-
-  const key = marketSlug;
-  const state = ledger[key] ?? { spentUsd: 0, trades: 0 };
-  const betAmount = Number(CONFIG.trading.simBetAmountUsd ?? 0);
-  if (!Number.isFinite(betAmount) || betAmount <= 0) return null;
-
-  if (simulatedBudget < betAmount) return null;
-
-  const maxPerRound = betAmount;
-
-  if (state.spentUsd >= maxPerRound) return null;
-
-  const remainingBudget = Math.min(maxPerRound - state.spentUsd, betAmount);
-  const qty = remainingBudget / priceUsd;
-  if (!Number.isFinite(qty) || qty <= 0) return null;
-
-  const cost = qty * priceUsd;
-
-  const trade = {
-    at: now.toISOString(),
-    marketSlug,
-    side,
-    timeLeftMin: remaining,
-    priceUsd,
-    quantity: qty,
-    costUsd: cost,
-    confidenceScore: chosenScore ?? null,
-    confidenceDirection: best?.direction ?? confidence?.direction ?? null
-  };
-
-  ledger[key] = {
-    spentUsd: state.spentUsd + cost,
-    trades: state.trades + 1
-  };
-
-  simulatedTradesBySlug[key] = trade;
-  simulatedBudget -= cost;
-
-  return trade;
-}
 
 applyGlobalProxyFromEnv();
 
@@ -872,6 +783,7 @@ async function fetchPolymarketSnapshot() {
 
 async function main() {
   const polySwingsCollector = createPolySwingsCollector();
+  const scenarioSimulator = createScenarioSimulator(CONFIG.trading);
   const binanceStream = startBinanceTradeStream({ symbol: CONFIG.symbol });
   const polymarketLiveStream = startPolymarketChainlinkPriceStream({});
   const chainlinkStream = startChainlinkPriceStream({});
@@ -879,7 +791,6 @@ async function main() {
   let prevSpotPrice = null;
   let prevCurrentPrice = null;
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
-  const simulatedTradeLedger = {};
   let lastRealTradeAtMs = 0;
   let loggedFunderOnce = false;
 
@@ -1131,7 +1042,6 @@ async function main() {
           .map((sec) => activePredictionsByCheckpoint[sec])
           .filter((p) => p && p.slug && p.slug !== marketSlug);
         if (previousPredictions.length) {
-          const primaryPrediction = activePredictionsByCheckpoint[60] ?? previousPredictions[0];
           const resolvedBySlug = {};
           for (const pred of previousPredictions) {
             const finalPrice = pred.lastPrice;
@@ -1168,58 +1078,21 @@ async function main() {
                 // ignore logging errors
               }
 
-              if (primaryPrediction && pred.checkpointSec === primaryPrediction.checkpointSec) {
-                const simulated = simulatedTradesBySlug[pred.slug];
-                if (simulated) {
-                  const win = correct === true;
-                  const stake = simulated.costUsd;
-                  const price = simulated.priceUsd;
-                  const size = simulated.quantity;
-                  const pnlUsd = win ? size * (1 - price) : -size * price;
-                  simulatedPnl += pnlUsd;
-                  simulatedBudget += stake + pnlUsd;
-                  try {
-                    appendCsvRow("./logs/simulated_trades.csv", [
-                      "settled_at",
-                      "market_slug",
-                      "side",
-                      "entry_time",
-                      "entry_time_left_min",
-                      "entry_price_usd",
-                      "cost_usd",
-                      "price_to_beat",
-                      "final_price",
-                      "correct",
-                      "confidence_score",
-                      "confidence_direction",
-                      "pnl_usd",
-                      "budget_after_usd"
-                    ], [
-                      new Date().toISOString(),
-                      pred.slug,
-                      simulated.side ?? pred.side ?? "",
-                      simulated.at,
-                      simulated.timeLeftMin.toFixed(3),
-                      simulated.priceUsd.toFixed(4),
-                      simulated.costUsd.toFixed(4),
-                      b.toFixed(2),
-                      f.toFixed(2),
-                      String(correct),
-                      simulated.confidenceScore ?? "",
-                      simulated.confidenceDirection ?? "",
-                      pnlUsd.toFixed(4),
-                      simulatedBudget.toFixed(4)
-                    ]);
-                  } catch {
-                    // ignore logging errors
-                  }
-                  delete simulatedTradesBySlug[pred.slug];
-                }
-              }
             }
           }
           const resolvedAtMs = Date.now();
           for (const [slug, resolved] of Object.entries(resolvedBySlug)) {
+            if (!CONFIG.trading.enableLiveTrading) {
+              const settled = scenarioSimulator.settleRound({
+                marketSlug: slug,
+                resolvedAtMs,
+                priceToBeat: resolved.priceToBeat,
+                finalPrice: resolved.finalPrice
+              });
+              if (settled) {
+                console.log(`[sim round] ${scenarioSimulator.getSummaryLine()}`);
+              }
+            }
             flushBidDecisionOutcomes({
               marketSlug: slug,
               resolvedAtMs,
@@ -1369,6 +1242,7 @@ async function main() {
       const success120Row = renderPredictionHistoryRow("Success @120s:", predictionHistoryByCheckpoint[120] ?? []);
       const success90Row = renderPredictionHistoryRow("Success @90s:", predictionHistoryByCheckpoint[90] ?? []);
       const success60Row = renderPredictionHistoryRow("Success:", predictionHistoryByCheckpoint[60] ?? []);
+      const simulationSummaryLine = !CONFIG.trading.enableLiveTrading ? scenarioSimulator.getSummaryLine() : null;
       let budgetLine;
       let accountBalanceUsd = null;
       if (CONFIG.trading.enableLiveTrading) {
@@ -1383,8 +1257,8 @@ async function main() {
         );
       } else {
         budgetLine = kv(
-          "Budget:",
-          `$${formatNumber(simulatedBudget, 2)} (PnL: ${simulatedPnl >= 0 ? "+" : ""}$${formatNumber(simulatedPnl, 2)})`
+          "Sim rounds:",
+          simulationSummaryLine ?? "-"
         );
       }
 
@@ -1589,6 +1463,8 @@ async function main() {
             tradeTimingSeconds: CONFIG.trading.tradeTimingSeconds,
             maxBidPrice: CONFIG.trading.maxBidPrice,
             confidenceMaxBidLadder: CONFIG.trading.confidenceMaxBidLadder ?? [],
+            riskAppetite: CONFIG.trading.riskAppetite,
+            riskAppetiteStep: CONFIG.trading.riskAppetiteStep,
             inCooldown: liveInCooldown,
             cooldownRemainingMin:
               liveInCooldown && Number.isFinite(liveMinsSince)
@@ -1600,8 +1476,10 @@ async function main() {
               : null,
             wouldAttemptAutoBid: shouldAttemptRealTrade,
             liveTradeBlockReason,
-            balanceUsd: CONFIG.trading.enableLiveTrading ? accountBalanceUsd : simulatedBudget,
-            simulatedPnlUsd: CONFIG.trading.enableLiveTrading ? null : simulatedPnl
+            balanceUsd: CONFIG.trading.enableLiveTrading ? accountBalanceUsd : null,
+            simulatedPnlUsd: null,
+            simulationSummaryLine: CONFIG.trading.enableLiveTrading ? null : simulationSummaryLine,
+            simulation: CONFIG.trading.enableLiveTrading ? null : scenarioSimulator.getSnapshot()
           },
           hints: {
             betType,
@@ -1694,19 +1572,17 @@ async function main() {
       }
 
       if (!CONFIG.trading.enableLiveTrading) {
-        const simulatedTrade = maybeSimulateBestEffortTrade({
+        const fills = scenarioSimulator.maybePlaceScenarioTrades({
           marketSlug,
           timeLeftMin,
-          marketUp,
-          marketDown,
-          ledger: simulatedTradeLedger,
-          confidence,
-          confidenceHistory: confidenceHistoryBySlug[marketSlug] ?? []
+          confidenceScore: confidence.score,
+          confidenceDirection: confidence.direction
         });
 
-        if (simulatedTrade) {
-          const msg = `Simulated trade: ${simulatedTrade.side} $${simulatedTrade.costUsd.toFixed(2)} (${simulatedTrade.quantity.toFixed(4)} @ $${simulatedTrade.priceUsd.toFixed(4)}) on ${simulatedTrade.marketSlug} with ~${fmtTimeLeft(simulatedTrade.timeLeftMin)} left`;
-          console.log(msg);
+        for (const fill of fills) {
+          console.log(
+            `[sim bid] ${fill.scenarioLabel} ${fill.side} $${fill.amountUsd.toFixed(2)} @ ${fill.bidPrice.toFixed(2)} (${fill.shares.toFixed(4)} shares) on ${fill.marketSlug}`
+          );
         }
       }
 
