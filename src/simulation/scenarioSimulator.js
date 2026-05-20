@@ -20,35 +20,98 @@ function scenarioThreshold(baseThreshold, scenarioRisk, baseRisk) {
   return clamp(adjusted, 1, 100);
 }
 
-export function createScenarioSimulator(tradingConfig) {
-  const baseRisk = normalizeRiskAppetite(tradingConfig?.riskAppetite, 0.5);
-  const step = clamp(Number(tradingConfig?.riskAppetiteStep ?? 0.2), 0, 0.5);
-  const fixedBidPrice = clamp(Number(tradingConfig?.maxBidPrice ?? 0.95), 0.01, 0.99);
-  const budgetResetAmount = Math.max(0, Number(tradingConfig?.simBudgetUsd ?? 0));
-  const betAmountUsd = Math.max(0, Number(tradingConfig?.simBetAmountUsd ?? 0));
-  const baseThreshold = clamp(Number(tradingConfig?.tradeThreshold ?? 75), 1, 100);
-
-  const definitions = [
+function computeDefinitions(baseRisk, step) {
+  return [
     { key: "optimistic", label: "Optimistic", riskAppetite: clamp(baseRisk + step, 0, 1) },
     { key: "normal", label: "Normal", riskAppetite: baseRisk },
     { key: "cautious", label: "Cautious", riskAppetite: clamp(baseRisk - step, 0, 1) }
   ];
+}
 
-  const scenarios = Object.fromEntries(
-    definitions.map((d) => [d.key, {
+export function createScenarioSimulator(tradingConfig) {
+  const knobs = {
+    baseRisk: normalizeRiskAppetite(tradingConfig?.riskAppetite, 0.5),
+    step: clamp(Number(tradingConfig?.riskAppetiteStep ?? 0.2), 0, 0.5),
+    fixedBidPrice: clamp(Number(tradingConfig?.maxBidPrice ?? 0.95), 0.01, 0.99),
+    budgetResetAmount: Math.max(0, Number(tradingConfig?.simBudgetUsd ?? 0)),
+    betAmountUsd: Math.max(0, Number(tradingConfig?.simBetAmountUsd ?? 0)),
+    baseThreshold: clamp(Number(tradingConfig?.tradeThreshold ?? 75), 1, 100),
+    entryMaxTimeLeftMin: clamp(Number(tradingConfig?.simEntryMaxTimeLeftMin ?? 2), 0.1, 20),
+    entryMinTimeLeftMin: clamp(Number(tradingConfig?.simEntryMinTimeLeftMin ?? 1.5), 0, 20)
+  };
+
+  if (knobs.entryMinTimeLeftMin > knobs.entryMaxTimeLeftMin) {
+    const tmp = knobs.entryMinTimeLeftMin;
+    knobs.entryMinTimeLeftMin = knobs.entryMaxTimeLeftMin;
+    knobs.entryMaxTimeLeftMin = tmp;
+  }
+
+  const definitions = computeDefinitions(knobs.baseRisk, knobs.step);
+  const scenarios = {};
+  for (const d of definitions) {
+    scenarios[d.key] = {
       ...d,
-      threshold: scenarioThreshold(baseThreshold, d.riskAppetite, baseRisk),
-      balanceUsd: budgetResetAmount,
+      threshold: scenarioThreshold(knobs.baseThreshold, d.riskAppetite, knobs.baseRisk),
+      balanceUsd: knobs.budgetResetAmount,
       totalPnlUsd: 0,
       rounds: 0,
       resets: 0,
       totalBids: 0
-    }])
-  );
+    };
+  }
 
   const roundsBySlug = {};
   const tradeByScenarioAndSlug = {};
   const recentSettlements = [];
+  const recentDecisions = [];
+
+  function logStrategyDecision(decision) {
+    recentDecisions.unshift(decision);
+    if (recentDecisions.length > 200) recentDecisions.length = 200;
+    try {
+      appendCsvRow("./logs/sim_strategy_decisions.csv", [
+        "timestamp",
+        "market_slug",
+        "scenario",
+        "action",
+        "reason",
+        "side",
+        "confidence_score",
+        "abs_confidence",
+        "threshold",
+        "time_left_min",
+        "max_bid_price",
+        "bet_amount_usd",
+        "balance_before_usd",
+        "balance_after_usd",
+        "budget_reset_amount_usd",
+        "risk_appetite",
+        "risk_step",
+        "base_threshold"
+      ], [
+        decision.timestamp ?? new Date().toISOString(),
+        decision.marketSlug ?? "",
+        decision.scenario ?? "",
+        decision.action ?? "",
+        decision.reason ?? "",
+        decision.side ?? "",
+        Number.isFinite(Number(decision.confidenceScore)) ? Number(decision.confidenceScore).toFixed(4) : "",
+        Number.isFinite(Number(decision.absConfidence)) ? Number(decision.absConfidence).toFixed(4) : "",
+        Number.isFinite(Number(decision.threshold)) ? Number(decision.threshold).toFixed(4) : "",
+        Number.isFinite(Number(decision.timeLeftMin)) ? Number(decision.timeLeftMin).toFixed(4) : "",
+        knobs.fixedBidPrice.toFixed(4),
+        knobs.betAmountUsd.toFixed(4),
+        Number.isFinite(Number(decision.balanceBeforeUsd)) ? Number(decision.balanceBeforeUsd).toFixed(4) : "",
+        Number.isFinite(Number(decision.balanceAfterUsd)) ? Number(decision.balanceAfterUsd).toFixed(4) : "",
+        knobs.budgetResetAmount.toFixed(4),
+        knobs.baseRisk.toFixed(4),
+        knobs.step.toFixed(4),
+        knobs.baseThreshold.toFixed(4)
+      ]);
+    } catch {
+      // ignore logging failures
+    }
+  }
 
   function ensureRound(marketSlug) {
     if (!marketSlug) return null;
@@ -66,24 +129,73 @@ export function createScenarioSimulator(tradingConfig) {
 
   function maybePlaceScenarioTrades({ marketSlug, confidenceScore, confidenceDirection, timeLeftMin, now = new Date() }) {
     if (!marketSlug) return [];
-    if (betAmountUsd <= 0 || budgetResetAmount <= 0) return [];
+    if (!Number.isFinite(Number(timeLeftMin))) return [];
+    if (knobs.betAmountUsd <= 0 || knobs.budgetResetAmount <= 0) return [];
     if (!Number.isFinite(Number(confidenceScore)) || confidenceDirection === "FLAT") return [];
-    if (!Number.isFinite(Number(timeLeftMin)) || Number(timeLeftMin) > 2 || Number(timeLeftMin) < 1.5) return [];
+    if (Number(timeLeftMin) > knobs.entryMaxTimeLeftMin || Number(timeLeftMin) < knobs.entryMinTimeLeftMin) return [];
 
     const side = Number(confidenceScore) >= 0 ? "UP" : "DOWN";
     const round = ensureRound(marketSlug);
     const fills = [];
+    const absConf = Math.abs(Number(confidenceScore));
 
     for (const def of definitions) {
       const state = scenarios[def.key];
       const roundKey = `${def.key}:${marketSlug}`;
-      if (tradeByScenarioAndSlug[roundKey]) continue;
+      if (tradeByScenarioAndSlug[roundKey]) {
+        logStrategyDecision({
+          timestamp: now.toISOString(),
+          marketSlug,
+          scenario: def.key,
+          action: "skip",
+          reason: "already_has_trade_for_round",
+          side,
+          confidenceScore,
+          absConfidence: absConf,
+          threshold: state.threshold,
+          timeLeftMin,
+          balanceBeforeUsd: state.balanceUsd,
+          balanceAfterUsd: state.balanceUsd
+        });
+        continue;
+      }
+      if (absConf < state.threshold) {
+        logStrategyDecision({
+          timestamp: now.toISOString(),
+          marketSlug,
+          scenario: def.key,
+          action: "skip",
+          reason: "below_threshold",
+          side,
+          confidenceScore,
+          absConfidence: absConf,
+          threshold: state.threshold,
+          timeLeftMin,
+          balanceBeforeUsd: state.balanceUsd,
+          balanceAfterUsd: state.balanceUsd
+        });
+        continue;
+      }
+      if (state.balanceUsd < knobs.betAmountUsd) {
+        logStrategyDecision({
+          timestamp: now.toISOString(),
+          marketSlug,
+          scenario: def.key,
+          action: "skip",
+          reason: "insufficient_balance",
+          side,
+          confidenceScore,
+          absConfidence: absConf,
+          threshold: state.threshold,
+          timeLeftMin,
+          balanceBeforeUsd: state.balanceUsd,
+          balanceAfterUsd: state.balanceUsd
+        });
+        continue;
+      }
 
-      const absConf = Math.abs(Number(confidenceScore));
-      if (absConf < state.threshold) continue;
-      if (state.balanceUsd < betAmountUsd) continue;
-
-      const shares = betAmountUsd / fixedBidPrice;
+      const shares = knobs.betAmountUsd / knobs.fixedBidPrice;
+      const balanceBeforeUsd = state.balanceUsd;
       const trade = {
         placedAt: now.toISOString(),
         marketSlug,
@@ -92,16 +204,30 @@ export function createScenarioSimulator(tradingConfig) {
         side,
         confidenceScore: Number(confidenceScore),
         confidenceDirection,
-        bidPrice: fixedBidPrice,
-        amountUsd: betAmountUsd,
+        bidPrice: knobs.fixedBidPrice,
+        amountUsd: knobs.betAmountUsd,
         shares
       };
 
-      state.balanceUsd -= betAmountUsd;
+      state.balanceUsd -= knobs.betAmountUsd;
       state.totalBids += 1;
       round.bidsByScenario[def.key] += 1;
       tradeByScenarioAndSlug[roundKey] = trade;
       fills.push(trade);
+      logStrategyDecision({
+        timestamp: now.toISOString(),
+        marketSlug,
+        scenario: def.key,
+        action: "bid",
+        reason: "threshold_passed",
+        side,
+        confidenceScore,
+        absConfidence: absConf,
+        threshold: state.threshold,
+        timeLeftMin,
+        balanceBeforeUsd,
+        balanceAfterUsd: state.balanceUsd
+      });
     }
 
     return fills;
@@ -139,10 +265,10 @@ export function createScenarioSimulator(tradingConfig) {
         state.totalPnlUsd += pnlUsd;
       }
 
-      if (state.balanceUsd <= 0 && budgetResetAmount > 0) {
+      if (state.balanceUsd <= 0 && knobs.budgetResetAmount > 0) {
         state.resets += 1;
         aggregateResets += 1;
-        state.balanceUsd = budgetResetAmount;
+        state.balanceUsd = knobs.budgetResetAmount;
       }
 
       state.rounds += 1;
@@ -260,6 +386,71 @@ export function createScenarioSimulator(tradingConfig) {
     return bits.join(" | ");
   }
 
+  function applyRuntimeControls(next = {}) {
+    let changed = false;
+    const parsed = {
+      baseRisk: next.riskAppetite,
+      step: next.riskAppetiteStep,
+      fixedBidPrice: next.maxBidPrice,
+      budgetResetAmount: next.budgetUsd,
+      betAmountUsd: next.betAmountUsd,
+      baseThreshold: next.tradeThreshold,
+      entryMaxTimeLeftMin: next.entryMaxTimeLeftMin,
+      entryMinTimeLeftMin: next.entryMinTimeLeftMin
+    };
+    for (const [k, raw] of Object.entries(parsed)) {
+      if (raw === undefined || raw === null || raw === "") continue;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) continue;
+      const before = knobs[k];
+      if (k === "baseRisk") knobs[k] = normalizeRiskAppetite(n, knobs.baseRisk);
+      else if (k === "step") knobs[k] = clamp(n, 0, 0.5);
+      else if (k === "fixedBidPrice") knobs[k] = clamp(n, 0.01, 0.99);
+      else if (k === "budgetResetAmount") knobs[k] = Math.max(0, n);
+      else if (k === "betAmountUsd") knobs[k] = Math.max(0, n);
+      else if (k === "baseThreshold") knobs[k] = clamp(n, 1, 100);
+      else if (k === "entryMaxTimeLeftMin") knobs[k] = clamp(n, 0.1, 20);
+      else if (k === "entryMinTimeLeftMin") knobs[k] = clamp(n, 0, 20);
+      if (knobs[k] !== before) changed = true;
+    }
+    if (knobs.entryMinTimeLeftMin > knobs.entryMaxTimeLeftMin) {
+      const tmp = knobs.entryMinTimeLeftMin;
+      knobs.entryMinTimeLeftMin = knobs.entryMaxTimeLeftMin;
+      knobs.entryMaxTimeLeftMin = tmp;
+      changed = true;
+    }
+    if (!changed) return false;
+
+    const nextDefs = computeDefinitions(knobs.baseRisk, knobs.step);
+    for (const def of nextDefs) {
+      const state = scenarios[def.key];
+      state.riskAppetite = def.riskAppetite;
+      state.threshold = scenarioThreshold(knobs.baseThreshold, def.riskAppetite, knobs.baseRisk);
+      if (state.balanceUsd <= 0 && knobs.budgetResetAmount > 0) {
+        state.balanceUsd = knobs.budgetResetAmount;
+      }
+    }
+    return true;
+  }
+
+  function resetSimulationState({ clearOpenTrades = true } = {}) {
+    for (const def of definitions) {
+      const state = scenarios[def.key];
+      state.balanceUsd = knobs.budgetResetAmount;
+      state.totalPnlUsd = 0;
+      state.rounds = 0;
+      state.resets = 0;
+      state.totalBids = 0;
+      state.threshold = scenarioThreshold(knobs.baseThreshold, state.riskAppetite, knobs.baseRisk);
+    }
+    for (const key of Object.keys(roundsBySlug)) delete roundsBySlug[key];
+    if (clearOpenTrades) {
+      for (const key of Object.keys(tradeByScenarioAndSlug)) delete tradeByScenarioAndSlug[key];
+    }
+    recentSettlements.length = 0;
+    recentDecisions.length = 0;
+  }
+
   function getSnapshot() {
     const scenariosList = definitions.map((d) => {
       const s = scenarios[d.key];
@@ -277,9 +468,20 @@ export function createScenarioSimulator(tradingConfig) {
     });
     return {
       summaryLine: getSummaryLine(),
+      knobs: {
+        maxBidPrice: knobs.fixedBidPrice,
+        budgetUsd: knobs.budgetResetAmount,
+        betAmountUsd: knobs.betAmountUsd,
+        tradeThreshold: knobs.baseThreshold,
+        riskAppetite: knobs.baseRisk,
+        riskAppetiteStep: knobs.step,
+        entryMinTimeLeftMin: knobs.entryMinTimeLeftMin,
+        entryMaxTimeLeftMin: knobs.entryMaxTimeLeftMin
+      },
       scenarios: scenariosList,
       overallPnlUsd: scenariosList.reduce((acc, x) => acc + x.totalPnlUsd, 0),
-      recentSettlements: recentSettlements.slice(0, 20)
+      recentSettlements: recentSettlements.slice(0, 20),
+      recentDecisions: recentDecisions.slice(0, 60)
     };
   }
 
@@ -288,6 +490,8 @@ export function createScenarioSimulator(tradingConfig) {
     maybePlaceScenarioTrades,
     settleRound,
     getSummaryLine,
-    getSnapshot
+    getSnapshot,
+    applyRuntimeControls,
+    resetSimulationState
   };
 }

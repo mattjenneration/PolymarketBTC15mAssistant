@@ -39,6 +39,7 @@ import path from "node:path";
 import readline from "node:readline";
 
 const MANUAL_BID_PATH = path.join("./logs", "manual_bid_request.json");
+const SIM_CONTROL_PATH = path.join("./logs", "sim_controls.json");
 const MANUAL_BID_TTL_MS = 180_000;
 
 /**
@@ -85,6 +86,16 @@ function takeManualBidRequestForExecution(currentMarketSlug, polyOk) {
     // ignore
   }
   return { side };
+}
+
+function readSimulationControls() {
+  if (!fs.existsSync(SIM_CONTROL_PATH)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(SIM_CONTROL_PATH, "utf8"));
+    return data && typeof data === "object" ? data : null;
+  } catch {
+    return null;
+  }
 }
 import { applyGlobalProxyFromEnv } from "./net/proxy.js";
 
@@ -793,6 +804,8 @@ async function main() {
   let priceToBeatState = { slug: null, value: null, setAtMs: null };
   let lastRealTradeAtMs = 0;
   let loggedFunderOnce = false;
+  let lastSimControlsAppliedAt = "";
+  let lastSimResetHandledAt = "";
 
   const header = [
     "timestamp",
@@ -1572,6 +1585,17 @@ async function main() {
       }
 
       if (!CONFIG.trading.enableLiveTrading) {
+        const simControl = readSimulationControls();
+        if (simControl?.updatedAt && simControl.updatedAt !== lastSimControlsAppliedAt) {
+          scenarioSimulator.applyRuntimeControls(simControl.controls || {});
+          lastSimControlsAppliedAt = simControl.updatedAt;
+        }
+        if (simControl?.resetRequestedAt && simControl.resetRequestedAt !== lastSimResetHandledAt) {
+          scenarioSimulator.resetSimulationState({ clearOpenTrades: true });
+          lastSimResetHandledAt = simControl.resetRequestedAt;
+          console.log("[sim reset] simulator state reset from dashboard control");
+        }
+
         const fills = scenarioSimulator.maybePlaceScenarioTrades({
           marketSlug,
           timeLeftMin,

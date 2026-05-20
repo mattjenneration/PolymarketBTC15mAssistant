@@ -17,6 +17,7 @@ const LOG_DIR = path.resolve(process.cwd(), "logs");
 const API_LOG = path.join(LOG_DIR, "api.log");
 const DASHBOARD_JSON = path.join(LOG_DIR, "dashboard.json");
 const MANUAL_BID_FILE = path.join(LOG_DIR, "manual_bid_request.json");
+const SIM_CONTROL_FILE = path.join(LOG_DIR, "sim_controls.json");
 const MANUAL_BID_TTL_MS = 180_000;
 const DASHBOARD_MANUAL_BID_SECRET = (process.env.DASHBOARD_MANUAL_BID_SECRET || "").trim();
 const CACHE_FILE = path.join(LOG_DIR, "outcome_resolution_cache.json");
@@ -325,6 +326,45 @@ function readManualBidRequestForApi() {
   }
 }
 
+function defaultSimControls() {
+  return {
+    maxBidPrice: CONFIG.trading?.maxBidPrice ?? 0.95,
+    budgetUsd: CONFIG.trading?.simBudgetUsd ?? 0,
+    betAmountUsd: CONFIG.trading?.simBetAmountUsd ?? 0,
+    tradeThreshold: CONFIG.trading?.tradeThreshold ?? 75,
+    riskAppetite: CONFIG.trading?.riskAppetite ?? 0.5,
+    riskAppetiteStep: CONFIG.trading?.riskAppetiteStep ?? 0.2,
+    entryMinTimeLeftMin: 1.5,
+    entryMaxTimeLeftMin: 2
+  };
+}
+
+function readSimControlState() {
+  if (!fs.existsSync(SIM_CONTROL_FILE)) return { controls: defaultSimControls(), updatedAt: null, resetRequestedAt: null };
+  try {
+    const raw = JSON.parse(fs.readFileSync(SIM_CONTROL_FILE, "utf-8"));
+    return {
+      controls: { ...defaultSimControls(), ...(raw.controls || {}) },
+      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : null,
+      resetRequestedAt: typeof raw.resetRequestedAt === "string" ? raw.resetRequestedAt : null
+    };
+  } catch {
+    return { controls: defaultSimControls(), updatedAt: null, resetRequestedAt: null };
+  }
+}
+
+function writeSimControlState(patch = {}, { requestReset = false } = {}) {
+  const prev = readSimControlState();
+  const next = {
+    controls: { ...prev.controls, ...(patch || {}) },
+    updatedAt: new Date().toISOString(),
+    resetRequestedAt: requestReset ? new Date().toISOString() : prev.resetRequestedAt ?? null
+  };
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  fs.writeFileSync(SIM_CONTROL_FILE, JSON.stringify(next), "utf8");
+  return next;
+}
+
 function parseIsoOrNull(s) {
   const t = new Date(s).getTime();
   return Number.isFinite(t) ? t : null;
@@ -375,6 +415,61 @@ app.post("/api/manual-bid", (req, res) => {
 
 app.get("/api/data", (req, res) => res.json(cachedData));
 
+app.get("/api/sim-controls", (req, res) => {
+  res.json(readSimControlState());
+});
+
+app.post("/api/sim-controls", (req, res) => {
+  try {
+    const body = req.body || {};
+    const numericFields = [
+      "maxBidPrice",
+      "budgetUsd",
+      "betAmountUsd",
+      "tradeThreshold",
+      "riskAppetite",
+      "riskAppetiteStep",
+      "entryMinTimeLeftMin",
+      "entryMaxTimeLeftMin"
+    ];
+    const patch = {};
+    for (const key of numericFields) {
+      if (body[key] === undefined || body[key] === null || body[key] === "") continue;
+      const n = Number(body[key]);
+      if (!Number.isFinite(n)) {
+        res.status(400).json({ ok: false, error: `invalid_${key}` });
+        return;
+      }
+      patch[key] = n;
+    }
+    const next = writeSimControlState(patch, { requestReset: false });
+    res.json({ ok: true, ...next });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "sim_controls_write_failed", message: String(err?.message || err) });
+  }
+});
+
+app.post("/api/sim-reset", (req, res) => {
+  try {
+    const clearLogs = (req.body?.clearLogs ?? true) !== false;
+    const next = writeSimControlState({}, { requestReset: true });
+    if (clearLogs) {
+      const files = [
+        "sim_scenarios_rounds.csv",
+        "sim_scenarios_overall.csv",
+        "sim_strategy_decisions.csv"
+      ];
+      for (const f of files) {
+        const p = path.join(LOG_DIR, f);
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      }
+    }
+    res.json({ ok: true, clearLogs, ...next });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "sim_reset_failed", message: String(err?.message || err) });
+  }
+});
+
 app.get("/api/history", (req, res) => {
   reloadOutcomeCache();
 
@@ -395,7 +490,7 @@ app.get("/api/history", (req, res) => {
   if (fromMs === null) fromMs = Date.now() - 24 * 3600_000;
 
   const decisionRows = readCsv(path.join(LOG_DIR, "bid_decisions_outcomes.csv"));
-  const simRows = readCsv(path.join(LOG_DIR, "simulated_trades.csv"));
+  const simRows = readCsv(path.join(LOG_DIR, "sim_scenarios_rounds.csv"));
 
   const live = [];
   for (const row of decisionRows) {
@@ -439,13 +534,17 @@ app.get("/api/history", (req, res) => {
       kind: "simulated",
       settledAt: row.settled_at,
       marketSlug: row.market_slug,
+      scenario: row.scenario || "",
       side: row.side,
-      entryPrice: row.entry_price_usd,
-      costUsd: row.cost_usd,
-      correct: row.correct,
+      bidsInRound: row.bids_in_round === "" ? null : Number(row.bids_in_round),
+      winnerSide: row.winner_side || "",
+      win: row.win === "" ? null : row.win === "true",
       confidenceScore: row.confidence_score === "" ? null : Number(row.confidence_score),
-      confidenceDirection: row.confidence_direction,
-      pnlUsd: row.pnl_usd
+      threshold: row.threshold === "" ? null : Number(row.threshold),
+      riskAppetite: row.risk_appetite === "" ? null : Number(row.risk_appetite),
+      pnlUsd: row.round_pnl_usd === "" ? null : Number(row.round_pnl_usd),
+      totalPnlUsd: row.scenario_total_pnl_usd === "" ? null : Number(row.scenario_total_pnl_usd),
+      balanceUsd: row.scenario_balance_usd === "" ? null : Number(row.scenario_balance_usd)
     });
   }
 
